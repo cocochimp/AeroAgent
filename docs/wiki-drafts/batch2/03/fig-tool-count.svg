@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 480" width="880" height="480" font-family="PingFang SC, Hiragino Sans GB, Helvetica Neue, Arial, sans-serif">
+  <rect x="0" y="0" width="880" height="480" fill="#FFFFFF"/>
+  <text x="28" y="36" font-size="18" font-weight="600" fill="#0F172A">工具数量与选择成本：为什么不是越多越好</text>
+  <text x="28" y="60" font-size="12.5" fill="#64748B">每多一个工具，模型就要在更多候选里做一次选择，注入面和评测面也跟着扩大</text>
+
+  <!-- Left: Too few -->
+  <rect x="28" y="88" width="250" height="300" rx="10" fill="#F8FAFC" stroke="#CBD5E1"/>
+  <text x="48" y="116" font-size="12.5" font-weight="600" fill="#475569">工具太少</text>
+  <rect x="52" y="132" width="200" height="40" rx="8" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="152" y="157" font-size="11" fill="#334155" text-anchor="middle">一个万能 search</text>
+  <text x="48" y="200" font-size="11" fill="#64748B">· 什么都能查，什么都不精确</text>
+  <text x="48" y="220" font-size="11" fill="#64748B">· 参数含糊，模型容易瞎填</text>
+  <text x="48" y="240" font-size="11" fill="#64748B">· 无法区分只读和写操作</text>
+  <text x="48" y="260" font-size="11" fill="#64748B">· 失败原因无法结构化</text>
+  <text x="48" y="296" font-size="11" font-weight="600" fill="#EA580C">结果：模型用得爽，系统不可控</text>
+
+  <!-- Middle: Just right -->
+  <rect x="315" y="88" width="250" height="300" rx="10" fill="#EFF6FF" stroke="#2563EB" stroke-width="1.5"/>
+  <text x="335" y="116" font-size="12.5" font-weight="600" fill="#1E40AF">刚好够用（本项目）</text>
+  <rect x="339" y="132" width="202" height="32" rx="7" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="440" y="153" font-size="10.5" fill="#1E3A8A" text-anchor="middle">tool_flight_status</text>
+  <rect x="339" y="170" width="202" height="32" rx="7" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="440" y="191" font-size="10.5" fill="#1E3A8A" text-anchor="middle">tool_rule_retrieve</text>
+  <rect x="339" y="208" width="202" height="32" rx="7" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="440" y="229" font-size="10.5" fill="#1E3A8A" text-anchor="middle">tool_recalc_fee</text>
+  <rect x="339" y="246" width="202" height="32" rx="7" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="440" y="267" font-size="10.5" fill="#1E3A8A" text-anchor="middle">finish（内部信号）</text>
+  <rect x="339" y="284" width="202" height="32" rx="7" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="440" y="305" font-size="10.5" fill="#7C2D12" text-anchor="middle">tool_issue_ticket（不进白名单）</text>
+  <text x="335" y="340" font-size="11" font-weight="600" fill="#1E40AF">结果：4 个只读 + 1 个受控写</text>
+  <text x="335" y="358" font-size="11" fill="#1E40AF">选择成本低，权限边界清晰</text>
+
+  <!-- Right: Too many -->
+  <rect x="602" y="88" width="250" height="300" rx="10" fill="#F8FAFC" stroke="#CBD5E1"/>
+  <text x="622" y="116" font-size="12.5" font-weight="600" fill="#475569">工具太多</text>
+  <rect x="626" y="132" width="200" height="24" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="726" y="149" font-size="10" fill="#64748B" text-anchor="middle">查订单 / 查乘客 / 查舱位</text>
+  <rect x="626" y="162" width="200" height="24" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="726" y="179" font-size="10" fill="#64748B" text-anchor="middle">查规则 / 查航变 / 查政策</text>
+  <rect x="626" y="192" width="200" height="24" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="726" y="209" font-size="10" fill="#64748B" text-anchor="middle">算费 / 算差价 / 算补贴</text>
+  <rect x="626" y="222" width="200" height="24" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="726" y="239" font-size="10" fill="#64748B" text-anchor="middle">改订单 / 退订单 / 改签</text>
+  <text x="622" y="276" font-size="11" fill="#64748B">· 模型选错率上升</text>
+  <text x="622" y="296" font-size="11" fill="#64748B">· Prompt 注入面扩大</text>
+  <text x="622" y="316" font-size="11" fill="#64748B">· 评测要覆盖所有组合</text>
+  <text x="622" y="336" font-size="11" fill="#64748B">· 工具间职责重叠</text>
+  <text x="622" y="362" font-size="11" font-weight="600" fill="#EA580C">结果：灵活但不可控</text>
+
+  <rect x="28" y="412" width="824" height="40" rx="6" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="44" y="437" font-size="11.5" fill="#475569">工具设计的核心矛盾：少到模型不会选错，多到覆盖所有合法业务路径，且每个写操作都有明确的门禁</text>
+</svg>

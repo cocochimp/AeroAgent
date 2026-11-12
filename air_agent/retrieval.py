@@ -4,6 +4,7 @@ import math
 import os
 import re
 import threading
+import hashlib
 from collections import Counter
 
 import jieba
@@ -15,6 +16,7 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 MODEL_DIR = S.ROOT / "models"
 EMB_MODEL = "BAAI/bge-small-zh-v1.5"
 RERANK_MODEL = "ms-marco-MultiBERT-L-12"
+QDRANT_URL = os.environ.get("QDRANT_URL", "").strip()
 CODE = re.compile(r"[A-Z][A-Z0-9_]+|\d+%?")
 jieba.setLogLevel(logging.WARNING)
 # BM25 停用词：在几乎每条规则里都出现的虚词/泛词，不应让无关问题凭它们命中
@@ -102,7 +104,7 @@ def _cos(a, b):
 
 
 class Index:
-    def __init__(self, rules: list[dict], mode: str):
+    def __init__(self, rules: list[dict], mode: str, collection_name: str = "air_ticket_rules"):
         from rank_bm25 import BM25Okapi
         self.rules, self.mode = rules, mode
         self.texts = [f"{r['title']}。{r['content']}" for r in rules]
@@ -113,12 +115,20 @@ class Index:
         if mode == "hybrid":
             from qdrant_client import QdrantClient, models as qm
             self.vecs = [[float(x) for x in v] for v in _models["embed"].embed(self.texts)]
-            self.qdrant = QdrantClient(":memory:")
-            self.qdrant.create_collection(
-                "rules", vectors_config=qm.VectorParams(size=len(self.vecs[0]), distance=qm.Distance.COSINE),
-                hnsw_config=qm.HnswConfigDiff(m=16, ef_construct=100))
-            self.qdrant.upsert("rules", points=[qm.PointStruct(id=i, vector=v, payload={"rule_id": r["id"]})
-                                                for i, (v, r) in enumerate(zip(self.vecs, rules))])
+            self.qdrant = QdrantClient(url=QDRANT_URL, timeout=5) if QDRANT_URL else QdrantClient(":memory:")
+            self.collection = collection_name
+            if not self.qdrant.collection_exists(self.collection):
+                try:
+                    self.qdrant.create_collection(
+                        self.collection, vectors_config=qm.VectorParams(size=len(self.vecs[0]), distance=qm.Distance.COSINE),
+                        hnsw_config=qm.HnswConfigDiff(m=16, ef_construct=100))
+                except Exception:
+                    # Multiple API/worker processes can race to create the same immutable versioned collection.
+                    if not self.qdrant.collection_exists(self.collection):
+                        raise
+            if self.qdrant.count(self.collection).count == 0:
+                self.qdrant.upsert(self.collection, points=[qm.PointStruct(id=i, vector=v, payload={"rule_id": r["id"]})
+                                                             for i, (v, r) in enumerate(zip(self.vecs, rules))])
         else:
             docs = [Counter(_ngrams(t)) for t in self.texts]
             df = Counter(g for d in docs for g in d)
@@ -136,7 +146,7 @@ class Index:
             return []
         qv = self.query_vec(q)
         if self.mode == "hybrid":
-            hits = self.qdrant.query_points("rules", query=qv, limit=k).points
+            hits = self.qdrant.query_points(self.collection, query=qv, limit=k).points
             return [(h.id, float(h.score)) for h in hits]
         sims = [(i, _cos(qv, v)) for i, v in enumerate(self.vecs)]
         return sorted([x for x in sims if x[1] > 0], key=lambda x: -x[1])[:k]
@@ -162,10 +172,11 @@ def get_index() -> Index:
     version = data.rules_version()      # 先读版本再读规则：中途有改动时下次会重建
     rules = data.list_rules()
     mode = status()["backend"]
-    key = (mode, str(data.db_path()), version, len(rules))
+    key = (mode, str(data.db_path()), version, len(rules), QDRANT_URL)
     with _lock:
         if _index["key"] != key:
-            _index.update(key=key, value=Index(rules, mode))
+            collection = "air_rules_" + hashlib.sha256(repr(key).encode()).hexdigest()[:20]
+            _index.update(key=key, value=Index(rules, mode, collection))
         return _index["value"]
 
 

@@ -1,0 +1,51 @@
+<title>08.1 导读与方法</title>
+<p>这一节先把一个真实的值班场景摊开，再看三种部署形态各自付什么代价，最后给五条可以直接拿去评审一份 compose 或一段探针代码的硬规则。目标不是让你背 OpenTelemetry 的术语，而是让你在下次有人说「我们上 K8s 吧」的时候，能先回答「现在到底缺什么」。</p>
+<h1>先看一个会被部署打败的场景</h1>
+<p>周一早上十一点，客服连续收到三个用户投诉：「点了确认，半天没反应」「我的案子状态一直停在等待确认」「刚才那条退款到底成没成」。你打开终端一眼：postgres 容器在跑，api 的日志在刷，worker 却因为昨晚一次发版没起来。Redis Streams 里攒了几百条 case.turn 和 fulfillment.submit，SSE 事件自然断了。但更麻烦的是，那几个已经点了确认的 operation 还在 Outbox 表里躺着——api 在确认时已经把 Operation、Ledger 和 Outbox 一起写进了 postgres，只是没人去投递。</p>
+<p>这一轮里发生的事，每一样都不是「代码错了」：进程没起、队列积压、事件流断了、外部状态未知。如果部署观测没写清楚「缺了哪个会怎样」，值班的人只能凭经验猜。本篇要给的就是这张凭经验之外的地图。</p>
+<h1>三种部署形态，各自付什么代价</h1>
+<table>
+<colgroup><col width="140"/><col width="170"/><col width="170"/><col width="170"/><col width="170"/></colgroup>
+<thead><tr><th><p>方案</p></th><th><p>依赖方向</p></th><th><p>可控性</p></th><th><p>调试成本</p></th><th><p>适合场景</p></th></tr></thead>
+<tbody>
+<tr><td><p><b>单进程直跑</b><br/>uvicorn 一个进程 + SQLite</p></td><td><p>没有进程边界，队列用内存或文件，所有依赖同生共死</p></td><td><p>弱。一处挂全挂，无法单独重启 worker</p></td><td><p>低。断点就在进程里</p></td><td><p>本地规则模式、教学演示、原型</p></td></tr>
+<tr><td><p><b>模块化单体 Compose</b><br/>api/worker 分进程 + PG/Redis/Qdrant</p></td><td><p>依赖显式写在 depends_on 与 healthcheck 里，进程间只通过 PG 和 Streams 通信</p></td><td><p>中。能单独重启 api 或 worker，事实集中在 PG</p></td><td><p>中。多了跨进程追 trace 和对账的成本</p></td><td><p>本项目当前形态；多团队生产前的过渡</p></td></tr>
+<tr><td><p><b>微服务 + 观测平台</b><br/>每域一服务 + 独立指标/日志/链路</p></td><td><p>服务间 RPC，跨服务事务要靠 Saga 或事件</p></td><td><p>高。独立扩缩、独立发版</p></td><td><p>高。链路边界、幂等、配置全部要自己管</p></td><td><p>服务数量与团队规模上来之后</p></td></tr>
+</tbody>
+</table>
+<p>选第二种不是因为它「标准」，而是退改签这件事的形状：事实要集中（PG）、异步要削峰（Redis Streams）、对外会超时（航司/LLM），但还远没有到要把 domain 拆成独立服务的规模。过早微化，会把「幂等键」「Outbox」「跨服务链路」这些本项目刚学会的东西，重新变成跨网络的问题。</p>
+<whiteboard type="svg" path="@./fig-degradation-path.svg"></whiteboard>
+<p><b>读图要点</b></p>
+<ul>
+<li>这张图要回答「故障来了先做什么」：四条路径的中间那一格全是确定性动作（查单、写库、降级检索、接管 pending），没有一条是「重启试试」。</li>
+<li>注意橙色只有两处——航司超时和检索不可用是外部依赖，其余两条是中间件抖动。外部依赖超时最贵，所以处置链最长，要查单、要标记、要转人工，而不是重试。</li>
+<li>读到这张图应该改变的判断是：Redis 挂了在本项目里不是 P0，因为账本在 postgres；真正 P0 是办理链路的外部超时，因为它可能已经动了钱。</li>
+</ul>
+<h1>liveness 与 readiness，到底差在哪</h1>
+<p>这两个探针最常被混为一谈，但它们回答的是两个完全不同的问题。liveness 问的是「这个进程是不是卡死了，该不该杀掉重启」——它应该只依赖进程自身能不能响应，连数据库都不该探，否则数据库一抖动，编排层就把你的进程当僵尸杀掉，越杀越雪崩。readiness 问的是「这个进程现在能不能接流量」——它必须探所有硬依赖，依赖没就绪就返回未就绪，让负载均衡把流量摘走，而不是把请求放进已经会失败的进程里。</p>
+<p>本项目 /api/v1/health 实际只做了一件事：探 postgres（SELECT 1）和 redis（ping），两个都 ok 才返回 200，否则 503。它是一个 readiness 探针，compose 里 api 的 healthcheck 也是打的它。但它没有探 qdrant，也没有单独的 liveness 端点——意味着 qdrant 挂掉之后，api 仍然会被认为健康并接流量，只是取证时静默走降级。</p>
+<h1>五条硬规则</h1>
+<ol>
+<li><b>依赖必须按健康状态起，不按「等几秒」起。</b>compose 里写 depends_on: condition: service_healthy，而不是后台等待；postgres/redis/qdrant 各自有 healthcheck，api 等三个都过了才起。</li>
+<li><b>readiness 探硬依赖，liveness 不探外部。</b>本项目 /health 探 PG 和 Redis 是对的，但漏了 qdrant；liveness 则应该是一个不带任何外部依赖的本地端口探测，避免被依赖拖垮。</li>
+<li><b>span 名一律 服务.环节.动作，业务主键必须挂成 attribute。</b>真实存在的例子是 agent.main.understand、agent.transaction.execute；但只有 servicing.case_id 和 servicing.operation_id 挂了属性，quote_id、session_id 还没挂，这是缺口，不是完成。</li>
+<li><b>Redis 丢消息不叫事故，账本丢了才是。</b>关键案件事件必须先写 postgres，Redis 里的事件流只是 best-effort 的实时推送；Outbox 留未发布行，dispatcher 恢复后重投。</li>
+<li><b>办理超时永远先查单，幂等键是唯一的重放凭证。</b>没有查单确认结果未知之前，不允许第二次调用航司；operation 标记「结果待核实」，超 N 笔转人工。</li>
+</ol>
+<h1>常见误用</h1>
+<ul>
+<li><b>把 /health 同时当 liveness 和 readiness。</b>错在哪：postgres 抖动时编排层会反复重启 api，把一次数据库故障放大成进程抖动循环。</li>
+<li><b>给 health 加上「业务成功」判断。</b>错在哪：探针的职责是「能不能接」，不是「能不能办好」；把航司超时塞进 health，等于让外部依赖决定你的进程该不该存在。</li>
+<li><b>靠在代码里 print 时间戳当 trace。</b>错在哪：没有 trace_id 串起来，你无法从一个 case_id 翻到那次办理，日志再多也是散的。</li>
+<li><b>Redis 挂了就宣布服务不可用。</b>错在哪：本项目关键事实在 postgres，案件落库和确认仍然能进行，只是 SSE 实时推送断了；正确说法是「实时事件降级」，不是「全站故障」。</li>
+<li><b>航司超时直接重试。</b>错在哪：办理接口不是幂等的读接口，盲目重放可能造成重复扣款；runbook 里明写了「必须按幂等键查单/对账，不可直接盲目重放」。</li>
+</ul>
+<h1>检查点</h1>
+<p>评审一份部署或一段探针，用下面五条自查，全部能答「是」再往下走：</p>
+<ul>
+<li>每个硬依赖在 compose 里都有 healthcheck，并且被下游以 service_healthy 等待吗？</li>
+<li>readiness 探的依赖，和进程真正接流量所必需的依赖，是同一批吗？有没有漏探或多探？</li>
+<li>随便挑一个 case_id，能在 trace 里从 HTTP 入口一直看到办理 span 吗？中间有没有断档？</li>
+<li>把 Redis 停掉，案件事件还能写进数据库吗？Outbox 里有没有留下待重投的行？</li>
+<li>办理接口超时之后，处置手册写的第一件事是「查单」还是「重试」？</li>
+</ul>

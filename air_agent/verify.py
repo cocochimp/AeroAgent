@@ -194,9 +194,22 @@ def check(scheme: dict, results: list[dict], fact_checker=None) -> dict:
     support_ratio = max(0.0, min(1.0, 1 - len(unsupported) / len(sentences))) if sentences else 1.0
     confidence = round(min(1.0 if quote_ok else 0.0, 0.0 if unsupported else 1.0,
                            0.0 if bad_refs or no_rules or rule_missing else 1.0), 2)
+    fee_comparison = []
+    for option, result in zip(options, results):
+        fee = result.get("fee") or {}
+        if option.get("type") == "CHANGE" and fee:
+            expected, actual = fee.get("total"), option.get("total")
+        elif option.get("type") == "REFUND" and fee:
+            expected, actual = fee.get("refund_amount"), option.get("total")
+        else:
+            continue
+        fee_comparison.append({"intent": option["type"], "rule_id": fee.get("rule_id"),
+                               "expected": expected, "actual": actual, "matched": expected == actual})
+    threshold = _threshold()
     return {"confidence": confidence, "quote_mismatch": not quote_ok, "bad_quotes": bad_quotes,
             "unsupported_claims": unsupported, "bad_refs": bad_refs, "errors": errors,
-            "support_ratio": round(support_ratio, 2), "passed": confidence >= _threshold()}
+            "support_ratio": round(support_ratio, 2), "threshold": threshold,
+            "fee_comparison": fee_comparison, "passed": confidence >= threshold}
 
 
 def _threshold():

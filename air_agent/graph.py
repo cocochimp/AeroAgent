@@ -14,9 +14,13 @@ from . import scheme as scheme_mod
 from . import settings as S
 from . import verify as verify_mod
 from .state import AgentState, ParsedQuery
+from backend.app.application.agents.main_agent import MainServiceAgent
+from backend.app.application.agents.solution_agent import ServicingAdvisorAgent
 
 _clients: dict = {}          # session_id -> LLM 客户端（不写进检查点）
 _graph = None
+_main_agent = MainServiceAgent()
+_solution_agent = ServicingAdvisorAgent()
 
 
 def _llm(state):
@@ -68,7 +72,7 @@ def order_align(state):
 
 def query_understand(state):
     t0 = time.perf_counter()
-    p = query.understand(state["question"], _qctx(state), _llm(state))
+    p = _main_agent.understand(state["question"], _qctx(state), _llm(state))
     order = data.get_order(p.order_id) if p.order_id else None
     ctx = memory.build_context(order, [], state["memory"], data.get_profile(state["user_id"]))
     note = f"{len(p.sub_queries)} 个子诉求，置信度 {p.confidence}" + ("，需要追问" if p.clarify else "")
@@ -97,7 +101,7 @@ def agent_node(state):
     if rounds > S.get()["planner"]["max_rounds"]:
         a = {"thought": "已达到 ReAct 轮数上限，转人工", "action": "human", "args": {}, "source": "guard"}
     else:
-        a = planner.decide(state, _llm(state))
+        a = _solution_agent.decide(state, _llm(state))
     upd = {"rounds": rounds, "next_action": a,
            "trace": [ev("agent_node", t0, {"sub_query": sub.text, "intent": sub.intent, "round": rounds}, a,
                         f"第 {rounds} 轮 → {a['action']}")]}
@@ -437,6 +441,7 @@ def _drive(inp, session_id, on_event=None):
     return {"session_id": session_id, "outcome": st.get("outcome"), "final": st.get("final"),
             "interrupt": pending, "trace": events, "parsed": st.get("parsed"), "context": st.get("context"),
             "results": st.get("results"), "verify": st.get("verify"),
+            "retries": st.get("retries", 0),
             "memory": {k: mem.get(k) for k in ("order_stack", "summary", "turns", "last_intent")}}
 
 

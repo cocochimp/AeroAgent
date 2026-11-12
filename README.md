@@ -1,120 +1,68 @@
-# 机票退改签 Agent（MVP）
+# 机票退改签 Agent 学习工作台
 
-基于 LangGraph 的机票改签/退票智能助手：理解乘客诉求 → 检索退改规则 → 运价引擎算钱 → 生成方案 → 校验防幻觉 → 乘客确认后办理。
+面向 Agent 学员的全链路实战项目：从识别退改诉求、检索票规、计算费用、生成报价，到乘客确认、交易复核和模拟办理。管理员可编辑评测集与规则、检查检索漏斗、管理演示数据和运行配置。
 
-> 所有航司、航班、订单、用户与规则均为**虚构数据**，由 `air_agent/seed.py` 按「今天」确定性生成，仅用于演示。
+> 所有航班、客票和旅客均为虚构演示数据；办理由 mock 航司适配器完成，不连接真实 GDS、支付或航司系统。
 
 ## 快速启动
 
-```bash
-./start.sh                      # 安装依赖（uv sync）并启动
-```
-
-- Web 工作台（`app.py`，http://127.0.0.1:8770）正在接入中。`app.py` 存在时 `./start.sh` 会启动它，参数原样传给 `app.py`。
-- 没有 `app.py` 时，`./start.sh` 进入命令行对话：
+需要 Docker Desktop、Node.js 和 npm：
 
 ```bash
-uv run python -m air_agent --user u_zhang --order "ORD$(date +%Y%m%d)001"
+cp .env.example .env   # 首次启动；本地保留 DEMO_AUTH=true
+./start.sh
 ```
 
-命令行里输入问题即可，会逐行打印节点 trace；遇到追问直接输入答案，遇到办理确认输入 `确认`/`y` 或 `取消`/`n`，空行退出。
+访问 <http://localhost:8080>。Compose 启动 React、FastAPI、worker、PostgreSQL、Redis 和 Qdrant。完整环境是默认学习入口；仅启动前端不会提供案件、订单、评测等服务端能力。
 
-演示用户：`u_zhang`（张三）、`u_li`（李四）、`u_wang`（王五），订单号为 `ORD<今天YYYYMMDD><序号 001-012>`。如果种子数据是在别的日期生成的，先重建：
+前端热更新：先运行上述服务，再执行：
 
 ```bash
-uv run python -c "from air_agent import data; data.init(force=True)"
+cd frontend
+npm ci
+npm run dev
 ```
 
-## 接入 DeepSeek
+访问 <http://localhost:5173>。Vite 会将 `/api` 代理到 `http://127.0.0.1:8000`。后端可用 `uv run uvicorn backend.app.api.main:app --reload --port 8000` 单独启动，但仍需配置 PostgreSQL、Redis 和 Qdrant；具体说明见 [`docs/runbook.md`](docs/runbook.md)。
 
-默认是规则模式（`offline`），不需要任何 Key。切换到 DeepSeek：
+## 学员工作台
 
-```bash
-cp config.example.json config.json
-# 编辑 config.json：填写 llm.api_key，并把 mode 改为 "deepseek"
-```
+- **乘客对话**：订单可退改资格、改签差价、改签加退票、航班取消、指代追问、模糊日期、转人工；确认报价后才执行办理。
+- **流程观测**：可折叠 Agent Trace、逐子诉求检索漏斗、候选规则分数、上下文 Token 分块、金额与依据校验。
+- **评测管理**：编辑/导入/导出评测集，按范围发起真实 Agent 运行，观察进度、业务正确率、工具准确率、票规命中率、延迟、Token、失败原因和逐例 Trace，比较历史运行。
+- **规则维护**：按航司、舱位、票种、场景和文本检索；检查 dense、BM25、RRF、过滤、精排、MMR、注入各阶段；编辑、停用和重新启用规则。
+- **数据与配置**：管理演示客票、航班状态和会员画像；查看及更新运行参数，配置 API Key 仅返回掩码。
 
-```json
-{
-  "mode": "deepseek",
-  "llm": {"base_url": "https://api.deepseek.com", "api_key": "sk-...", "model": "deepseek-chat", "timeout": 30}
-}
-```
+指标读取实际服务端运行结果。没有值时显示“本轮无数据”，不会用截图数值补齐。
 
-`config.json` 已在 `.gitignore` 中，不会被提交。DeepSeek 模式下 LLM 负责 ReAct 决策、意图拆解、方案措辞、摘要和事实核查；**金额始终来自运价引擎**。LLM 调用失败时自动回退到规则计划表（trace 中 `source=fallback`）。也可以单次指定：`uv run python -m air_agent --mode deepseek`。
+### 旧工作台功能核对
 
-## 五项工作与代码对照
-
-| 工作项 | 图节点 | 代码位置 |
-|---|---|---|
-| 一 ReAct 规划编排 | agent_node / schema_validate / checkpoint_gate / tool_exec / retry_node | `air_agent/graph.py`、`planner.py`、`tools.py` |
-| 二 Query 理解 | order_align / query_understand / clarify / step_back | `air_agent/query.py` |
-| 三 混合检索与精排 | tool_exec(tool_rule_retrieve) | `air_agent/retrieval.py` |
-| 四 上下文与记忆 | memory_node / finish | `air_agent/memory.py` |
-| 五 方案生成与质量保障 | tool_scheme_gen / verify_node / human_review / await_confirm / tool_issue_ticket | `air_agent/scheme.py`、`verify.py`、`evaluation.py` |
-
-其他模块：`engine.py` 运价引擎（金额的唯一来源）、`data.py` SQLite 数据层、`seed.py` 虚构数据、`llm.py` DeepSeek 客户端与测试用 `FakeLLM`、`settings.py` 配置。
-
-主流程：
-
-```
-user_input → memory_node → order_align → query_understand →（clarify）→ agent_node ⇄ schema_validate
-  → checkpoint_gate → tool_exec →（step_back）→ … → sub_done → tool_scheme_gen → verify_node
-  →（retry_node）→ finish | human_review → finish →（await_confirm → tool_issue_ticket）
-```
-
-- 追问（clarify）和办理确认（await_confirm）用 LangGraph `interrupt()` 实现，检查点存在 `var/checkpoints.db`，服务重启后可以继续 `resume`。
-- 防跳步：`checkpoint_gate` 要求算钱前必须先检索规则；被打回超过 2 次转人工。
-- 工具参数错误（如相对日期「后天」）会把结构化错误反馈给下一轮 ReAct；无法修正时追问乘客或转人工。
-- 方案的依据规则必须被检索到并被引用（`scheme.ensure_fee_rule` 会把运价引擎用到的规则补进结果），`verify` 再逐项比对金额、核查论断、检查引用。
-- 同一会话的整轮对话持有 `memory.session_lock`，并发请求不会互相覆盖记忆。
-- Python 接口：`graph.run_turn(session_id, user_id, message, order_id=None, mode=None, client=None, on_event=None)`、`graph.resume(session_id, payload, ...)`、`graph.pending_interrupt(session_id)`。
-
-## 演示脚本
-
-以下以 `D=$(date +%Y%m%d)` 为订单号前缀，在命令行或 Web 工作台输入均可。
-
-| # | 场景 | 用户 / 订单 | 输入 | 预期 |
-|---|---|---|---|---|
-| 1 | 改签差价 | u_zhang / `ORD${D}001` | 帮我改到大后天 | 改期费 + 票面差价 + 合计，等待确认；输入「确认」后出新票号 |
-| 2 | 改签加退票 | u_zhang / `ORD${D}001` | 改到大后天，顺便看看退票多少钱 | 两个子诉求、两个方案（CHANGE、REFUND） |
-| 3 | 航班取消 | u_wang / `ORD${D}007` | 航班取消了，帮我退票 | 非自愿退票，退票费 0 元，全额退款，引用 GEN-CANCEL |
-| 4 | 指代追问 | u_zhang / 先做 #1，再输入 | 那退票呢 | 从订单栈取到同一订单，给出退票方案 |
-| 5 | 模糊日期触发 Schema 校验 | u_zhang / `ORD${D}001` | 改到下个月初 | schema_validate 报 TYPE 错误 → 追问日期 → 选定后给出方案 |
-| 6 | 无关问题转人工 | u_wang / 不选订单 | 宠物能带上飞机吗 | 先追问意图；选「政策咨询」后检索不到依据 → retry_node → 转人工 |
-
-另外：u_zhang 不选订单输入「我要退票」，会先追问订单（选 `ORD${D}003`）。
-
-## 测试与评测
-
-```bash
-uv run pytest -q                 # 单元测试（默认用 TF-IDF + BM25 降级检索，不下载模型）
-uv run pytest -m slow -v         # 真实 BGE-small-zh + FlashRank 检索（需要下载模型）
-```
-
-金标准评测（固定在 2026-09-26 10:00 运行，使用独立沙箱库 `var/eval_sandbox/`，每条用例前重置数据，不影响演示数据）：
-
-```bash
-uv run python -m air_agent.evaluation build              # 生成 eval/gold_cases.json（65 条）
-uv run python -m air_agent.evaluation validate           # 校验用例 → {"type":"validated","errors":{}}
-uv run python -m air_agent.evaluation run --mode offline # 运行，结果写入 var/eval_runs/<run_id>.json
-uv run python -m air_agent.evaluation run --mode offline --ids o01-chg,policy-01 --run-id demo
-```
-
-**期望金额的来源**：用例里的期望金额由构建脚本调用运价引擎生成，`validate` 时再用引擎重算比对。所以评测检验的是「Agent 是否调用了正确的工具、拿到了正确的引擎结果，并原样写进方案」，而不是检验运价引擎本身的计费规则（引擎由 `tests/test_engine.py` 单独覆盖）。
-
-### 实测指标（规则模式 offline，检索后端 fallback，2026-11-05）
-
-| 指标 | 数值 |
+| 区域 | 保留的操作 |
 |---|---|
-| 用例数 n | 65 |
-| 工具调用准确率 tool_acc | 1.00 |
-| 政策命中率 policy_hit | 0.98 |
-| 正确率 correctness | 1.00 |
-| 转人工率 human_rate | 0.046（3 条转人工用例） |
-| 平均延迟 / P95 | 29.1 ms / 37.3 ms |
-| 平均上下文 tokens | 266 |
+| 顶栏 | 规则/DeepSeek 模式状态、用户身份、检索状态、深浅主题 |
+| 对话 | 改签差价、改签+退票、航班取消、指代追问、模糊日期、转人工；报价确认与办理结果 |
+| 流程/检索/记忆/校验 | 节点 Trace 输入输出与耗时；逐子诉求检索阶段和候选分数；Token 分块与截断；置信度、金额、引用依据和错误 |
+| 评测 | 评测用例搜索、编辑、导入/导出、保存、范围运行、实时进度、失败下钻、Trace、历史和双运行对比 |
+| 规则 | 航司/舱位/票种/场景/文本过滤，实际检索漏斗，新增/编辑/停用/启用 |
+| 数据 | 订单和画像查询、航班正常/延误/取消、画像清理、演示数据重置 |
+| 配置 | 运行配置读取/保存/校验、API Key 掩码、可选 LLM 连通性检查 |
 
-唯一失败原因是 `rule_miss` 1 条（policy-01「东方云航特价票的退订规定是什么」：降级检索把特价票的改签规则排在了退票规则前面）。`rule_miss` 与 `wrong_tools` 只计入政策命中率与工具准确率，不计入正确率。DeepSeek 模式的评测需要配置 Key 后运行 `--mode deepseek`，尚未实测。
+## 业务与架构
 
-用例覆盖：12 张演示订单 × 4 种问法（改签 / 退票 / 改签+退票 / 航班状态），8 条政策咨询（四家航司），追问（订单、日期、模糊日期）、指代（回程、省略、订单栈）各 3 条，3 条转人工。
+```text
+乘客诉求 → 主 Agent 编排 → 方案 Agent 查询票规与费用 → 展示报价
+        → 乘客明确确认 → 交易 Agent 复核 → 幂等提交 mock 航司 → 更新订单并记录审计
+```
+
+- **DDD 六边形架构**：业务规则与 FastAPI、LangGraph、数据库和队列分离。
+- **四梯度会员模型**：普通、银卡、金卡、黑钻用户用于演示会员策略输入；当前价格计算按演示票规，不虚构会员减免。
+- **确认后 1% 价格保护**：报价过期仍复核；降价或涨幅不超过 1% 仍按已确认金额办理，平台承担小幅差额；涨幅超过 1% 重新报价并再次确认。退款金额降低时重新确认。
+- **可靠办理**：PostgreSQL 保存案件、报价、操作、账本和审计；Outbox/Redis Streams 承接后台工作；确认 ID 和幂等键防止重复办理。
+
+## 技术栈与文档
+
+Python 3.13、FastAPI、LangGraph、React 18、Vite、TypeScript、PostgreSQL、SQLAlchemy async、Redis Streams、Qdrant、OpenTelemetry、Docker Compose。版本化 API 共 **15 个 method/path**，见 [`docs/api-v1.md`](docs/api-v1.md)。
+
+后端入口为 `backend.app.api.main`，DDD 代码位于 `backend/app/domain`、`application`、`adapters`、`api`。`air_agent/` 保留现有 Agent/检索实现，供 DDD 适配器调用；根目录 `app.py` 与 `web/` 是旧入口，继续保留作兼容回退，不是新工作台的页面数据源。
+
+共享环境不能使用本地演示令牌；关闭 `DEMO_AUTH` 并配置真实身份源、密钥管理和受控配置存储。部署边界见 [`docs/runbook.md`](docs/runbook.md)。

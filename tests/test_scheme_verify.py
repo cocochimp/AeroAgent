@@ -26,6 +26,13 @@ def test_template_scheme_passes_verify():
     assert s.options[0].total == res[0]["fee"]["total"]
     v = verify.check(s.model_dump(), res)
     assert v["confidence"] == 1.0 and v["passed"]
+    assert v["threshold"] == 0.85
+    assert v["fee_comparison"] == [
+        {"intent": "CHANGE", "rule_id": res[0]["fee"]["rule_id"],
+         "expected": res[0]["fee"]["total"], "actual": s.options[0].total, "matched": True},
+        {"intent": "REFUND", "rule_id": res[1]["fee"]["rule_id"],
+         "expected": res[1]["fee"]["refund_amount"], "actual": s.options[1].total, "matched": True},
+    ]
 
 
 def test_wrong_amount_detected():

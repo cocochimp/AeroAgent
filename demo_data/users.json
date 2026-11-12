@@ -1,0 +1,22 @@
+[
+  {
+    "user_id": "u_zhang",
+    "name": "张三",
+    "tier": "金卡"
+  },
+  {
+    "user_id": "u_li",
+    "name": "李四",
+    "tier": "银卡"
+  },
+  {
+    "user_id": "u_wang",
+    "name": "王五",
+    "tier": "普卡"
+  },
+  {
+    "user_id": "u_zhao",
+    "name": "赵六",
+    "tier": "黑钻"
+  }
+]

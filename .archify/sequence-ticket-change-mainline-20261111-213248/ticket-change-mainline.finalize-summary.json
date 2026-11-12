@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "sequence",
+  "quality": "showcase",
+  "specification": {
+    "path": "/Users/Doc/agent/air-ticket-agent/.archify/sequence-ticket-change-mainline-20261111-213248/candidate.json",
+    "sha256": "873af407d0c4a94c57472ee48c704901104ab7092b6492ecff72e3a67733fdaa",
+    "bytes": 7073
+  },
+  "artifact": {
+    "path": "/Users/Doc/agent/air-ticket-agent/.archify/sequence-ticket-change-mainline-20261111-213248/ticket-change-mainline.html",
+    "sha256": "34b79acd8415a326b7450dfbe2ec8f163646423402bfb0ab8fba696204a3f15a",
+    "bytes": 848848
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/Users/Doc/agent/air-ticket-agent/.archify/sequence-ticket-change-mainline-20261111-213248/ticket-change-mainline.finalize.json",
+    "summaryReceipt": "/Users/Doc/agent/air-ticket-agent/.archify/sequence-ticket-change-mainline-20261111-213248/ticket-change-mainline.finalize-summary.json",
+    "browserCheckReceipt": "/Users/Doc/agent/air-ticket-agent/.archify/sequence-ticket-change-mainline-20261111-213248/ticket-change-mainline.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-11T13:36:57.289Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 5102,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

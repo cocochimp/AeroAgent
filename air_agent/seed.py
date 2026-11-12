@@ -73,6 +73,7 @@ ORDER_SPECS = [
     ("u_zhang", "CZ", 2, "Y", -1, "张三", "scheduled", 0),    # 昨天，已误机
     ("u_li", "MU", 0, "Y", 6, "李四", "scheduled", 0),
     ("u_wang", "CA", 0, "SPECIAL", 2, "王五", "scheduled", 0),
+    ("u_zhao", "HU", 0, "C", 3, "赵六", "scheduled", 0),
 ]
 
 PROFILES = [
@@ -84,6 +85,9 @@ PROFILES = [
               "prefer_action": {"REFUND": 2}, "price_sensitivity": "中"}},
     {"user_id": "u_wang", "name": "王五", "tier": "普卡",
      "data": {"routes": {}, "airlines": {}, "products": {}, "prefer_action": {}, "price_sensitivity": "低"}},
+    {"user_id": "u_zhao", "name": "赵六", "tier": "黑钻",
+     "data": {"routes": {"HGH-PEK": 5}, "airlines": {"HU": 8}, "products": {"C": 4},
+              "prefer_action": {"CHANGE": 4}, "price_sensitivity": "低"}},
 ]
 
 

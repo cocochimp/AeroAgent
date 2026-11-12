@@ -4,19 +4,19 @@ from air_agent import data, seed
 def test_init_seeds_everything():
     data.init()
     orders = data.list_orders()
-    assert len(orders) == 12
-    assert {o["user_id"] for o in orders} == {"u_zhang", "u_li", "u_wang"}
+    assert len(orders) == 13
+    assert {o["user_id"] for o in orders} == {"u_zhang", "u_li", "u_wang", "u_zhao"}
     assert all(o["order_id"].startswith("ORD") and len(o["order_id"]) == 14 for o in orders)
     rules = data.list_rules()
     assert len(rules) == 4 * 6 * 2 + 4
     assert data.get_rule("MU-Y_DISCOUNT-CHG")["scenario"] == "VOLUNTARY_CHANGE"
-    assert len(data.list_profiles()) == 3
+    assert len(data.list_profiles()) == 4
 
 
 def test_init_is_idempotent():
     data.init()
     data.init()
-    assert len(data.list_orders()) == 12
+    assert len(data.list_orders()) == 13
 
 
 def test_flight_status_update():
@@ -71,7 +71,7 @@ def test_empty_string_filters_are_not_ignored():
     assert data.list_orders("") == []
     assert data.list_flights(origin="") == []
     assert data.list_rules(airline="") == []
-    assert len(data.list_orders(None)) == 12
+    assert len(data.list_orders(None)) == 13
 
 
 def test_init_reseeds_on_new_day():
@@ -80,7 +80,7 @@ def test_init_reseeds_on_new_day():
     S.set_now(datetime(2026, 9, 27, 10, 0))
     data.init()
     orders = data.list_orders()
-    assert len(orders) == 12
+    assert len(orders) == 13
     assert all(o["order_id"].startswith("ORD20260927") for o in orders)
 
 

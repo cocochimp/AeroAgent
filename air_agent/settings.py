@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = ROOT / "config.json"
+CONFIG_PATH = Path(os.environ.get("AIR_CONFIG_PATH", ROOT / "config.json"))
 VAR_DIR = Path(os.environ.get("AIR_VAR_DIR", ROOT / "var"))
 
 DEFAULTS = {

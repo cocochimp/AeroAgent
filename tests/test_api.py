@@ -102,7 +102,7 @@ def test_orders_users_and_flight_status(client):
     o = orders[0]
     assert o["flight"]["origin_city"] and o["product_label"] and o["flight_status_label"]
     users = client.get("/api/users").json()["users"]
-    assert {u["user_id"] for u in users} == {"u_zhang", "u_li", "u_wang"}
+    assert {u["user_id"] for u in users} == {"u_zhang", "u_li", "u_wang", "u_zhao"}
     assert not any(k.startswith("_") for u in users for k in u["data"])
 
     r = client.post(f"/api/flights/{o['flight_no']}/{o['date']}/status", json={"status": "delayed", "delay_min": 150})

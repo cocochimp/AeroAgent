@@ -1,0 +1,74 @@
+name: air-ticket-agent
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-air_ticket}
+      POSTGRES_USER: ${POSTGRES_USER:-air}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-air-local-only}
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    volumes: ["qdrant-data:/qdrant/storage"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 3s
+      retries: 15
+  api:
+    build: ..
+    environment: &app-env
+      APP_ENV: ${APP_ENV:-demo}
+      DEMO_AUTH: ${DEMO_AUTH:-true}
+      JWT_SECRET: ${JWT_SECRET:-local-demo-secret-change-me}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-air}:${POSTGRES_PASSWORD:-air-local-only}@postgres:5432/${POSTGRES_DB:-air_ticket}
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      AIR_CONFIG_PATH: /app/var/config.json
+      AUTO_CREATE_SCHEMA: ${AUTO_CREATE_SCHEMA:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: air-ticket-api
+    command: ["uv", "run", "--no-sync", "uvicorn", "backend.app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes: ["../var:/app/var"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      qdrant: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  worker:
+    build: ..
+    environment:
+      <<: *app-env
+      OTEL_SERVICE_NAME: air-ticket-worker
+    command: ["uv", "run", "--no-sync", "python", "-m", "backend.app.worker"]
+    volumes: ["../var:/app/var"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      api: {condition: service_healthy}
+  web:
+    build: ../frontend
+    ports: ["${WEB_PORT:-8080}:80"]
+    depends_on: [api]
+volumes:
+  postgres-data:
+  redis-data:
+  qdrant-data:

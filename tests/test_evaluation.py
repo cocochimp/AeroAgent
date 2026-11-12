@@ -58,3 +58,32 @@ def test_full_gold_offline_baseline():
     failed = [(r["case_id"], r["reasons"]) for r in run["results"] if not r["passed"]]
     assert s["correctness"] >= 0.9, failed
     assert s["tool_acc"] >= 0.9, failed
+
+
+def test_full_business_mismatch_makes_evaluation_case_fail(monkeypatch):
+    case = {"id": "fee-check", "title": "费用核对", "tags": [], "user_id": "u1", "airline": "MU",
+            "fare_product": "Y", "order": "ORD1", "question": "退票多少钱", "history": [],
+            "clarify_answers": [], "expect": {"intents": ["CHANGE"], "tools": E.REACT,
+            "fees": {"CHANGE": 100}, "rule_ids": ["RULE1"], "outcome": "ANSWER", "schema_errors": []},
+            "forbid": list(E.FORBID)}
+    result = {"outcome": "ANSWER", "interrupt": None, "trace": [], "results": [{"intent": "CHANGE",
+        "calls": [{"tool": tool, "ok": True} for tool in E.REACT], "rules": [{"id": "RULE1"}]}],
+        "final": {"options": [{"allowed": True, "total": 101}], "text": "改签费101元"}, "verify": {},
+        "context": {"total": 12}}
+    monkeypatch.setattr(E.data, "init", lambda **_: None)
+    monkeypatch.setattr(E.graph, "run_turn", lambda *_args, **_kwargs: result)
+
+    report = E.run_case(case, "offline", "test")
+    assert report["actual"]["fees"]["CHANGE"] == 101
+    assert report["passed"] is False
+    assert "fee_mismatch" in report["reasons"]
+
+
+def test_evaluation_snapshot_selects_requested_cases_and_rejects_unknown_ids():
+    from backend.app.application.evaluations import select_case_snapshot
+    cases = [{"id": "a", "question": "退票", "expect": {"outcome": "ANSWER"}},
+             {"id": "b", "question": "改签", "expect": {"outcome": "ANSWER"}}]
+    assert select_case_snapshot(cases, ["b"]) == [cases[1]]
+    import pytest
+    with pytest.raises(ValueError, match="未知用例"):
+        select_case_snapshot(cases, ["missing"])

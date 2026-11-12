@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    participant U as 办理台
+    participant API as FastAPI 入站适配器
+    participant G as 主Agent图
+    participant S as 方案Agent
+    participant T as 交易Agent
+    participant BUS as 事件表 / SSE
+
+    U->>API: POST /cases（诉求 + 订单号）
+    API->>G: 建案件，写入 case_id
+    G->>BUS: progress（已受理）
+    BUS-->>U: SSE 推第一帧
+    G->>S: 取证：规则检索 + 报价计算
+    S->>BUS: tool_call（policy_search / quote_fare）
+    BUS-->>U: 显示"正在核对票规"
+    S-->>G: 方案 + 报价快照
+    G->>BUS: need_input（缺舱位或票种时）
+    BUS-->>U: 弹澄清卡片
+    U->>API: POST /cases/{id}/messages（补齐字段）
+    API->>G: 恢复中断点，不得重算金额
+    G->>BUS: quote（金额明细 + 规则依据）
+    BUS-->>U: 渲染报价卡片与"确认办理"
+    U->>API: POST /quotes/{id}/confirm（确认令牌 + 幂等键）
+    API->>T: 校验令牌与快照有效期
+    T->>BUS: receipt 或 error
+    BUS-->>U: 办理回执 / 失败原因

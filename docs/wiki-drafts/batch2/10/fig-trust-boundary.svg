@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 500" width="880" height="500" font-family="PingFang SC, Hiragino Sans GB, Helvetica Neue, Arial, sans-serif">
+  <rect x="0" y="0" width="880" height="470" fill="#FFFFFF"/>
+  <text x="28" y="36" font-size="18" font-weight="600" fill="#0F172A">可信与不可信数据的边界</text>
+  <text x="28" y="60" font-size="12.5" fill="#64748B">系统提示位只放代码固定产物；用户输入、规则文本、历史和观察结果按不可信数据对待，只进用户或工具结果位</text>
+
+  <!-- 左侧可信区 -->
+  <rect x="28" y="86" width="370" height="272" rx="10" fill="#EFF6FF" stroke="#2563EB"/>
+  <text x="48" y="114" font-size="12.5" font-weight="600" fill="#1E40AF">可信 · 代码固定产物</text>
+
+  <rect x="48" y="130" width="330" height="52" rx="8" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="62" y="152" font-size="11.5" fill="#1E3A8A">系统提示位（system 角色）</text>
+  <text x="62" y="170" font-size="10.5" fill="#64748B">memory.py SYSTEM_PROMPT：身份与基础约束，写死在代码里</text>
+
+  <rect x="48" y="194" width="330" height="52" rx="8" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="62" y="216" font-size="11.5" fill="#1E3A8A">结构定义与门禁</text>
+  <text x="62" y="234" font-size="10.5" fill="#64748B">tools.py SCHEMAS；checkpoint_gate；await_confirm 确认中断</text>
+
+  <rect x="48" y="258" width="330" height="52" rx="8" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="62" y="280" font-size="11.5" fill="#1E3A8A">后验校验</text>
+  <text x="62" y="298" font-size="10.5" fill="#64748B">verify.check：金额比对、论断短语核查、引用合法性</text>
+
+  <text x="48" y="338" font-size="10.5" fill="#475569">这一侧的内容不随单次对话变化，改动需要改代码并走评审</text>
+
+  <!-- 中间隔离带 -->
+  <rect x="410" y="86" width="60" height="272" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-dasharray="5 4"/>
+  <text x="440" y="180" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">角色位</text>
+  <text x="440" y="200" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">隔离</text>
+  <text x="440" y="232" font-size="10" fill="#64748B" text-anchor="middle">system</text>
+  <text x="440" y="250" font-size="10" fill="#64748B" text-anchor="middle">vs</text>
+  <text x="440" y="268" font-size="10" fill="#64748B" text-anchor="middle">user / tool</text>
+
+  <!-- 右侧不可信区 -->
+  <rect x="482" y="86" width="370" height="272" rx="10" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="502" y="114" font-size="12.5" font-weight="600" fill="#9A3412">不可信 · 外部输入与检索内容</text>
+
+  <rect x="502" y="130" width="330" height="52" rx="8" fill="#FFFFFF" stroke="#FED7AA"/>
+  <text x="516" y="152" font-size="11.5" fill="#7C2D12">用户原话</text>
+  <text x="516" y="170" font-size="10.5" fill="#9A3412">诉求、备注、确认回复；其中可能夹带命令式语句</text>
+
+  <rect x="502" y="194" width="330" height="52" rx="8" fill="#FFFFFF" stroke="#FED7AA"/>
+  <text x="516" y="216" font-size="11.5" fill="#7C2D12">检索到的规则文本</text>
+  <text x="516" y="234" font-size="10.5" fill="#9A3412">来自规则库与检索结果，按数据引用，不按指令执行</text>
+
+  <rect x="502" y="258" width="330" height="52" rx="8" fill="#FFFFFF" stroke="#FED7AA"/>
+  <text x="516" y="280" font-size="11.5" fill="#7C2D12">会话历史、画像与工具观察</text>
+  <text x="516" y="298" font-size="10.5" fill="#9A3412">历史摘要、用户画像、工具返回结果，均进用户段或观察位</text>
+
+  <text x="502" y="338" font-size="10.5" fill="#9A3412">这一侧任何命令式内容都不允许改写左侧的身份与约束</text>
+
+  <path d="M482 156 L472 156" fill="none" stroke="#EA580C" stroke-width="1.4" marker-end="url(#d1)"/>
+  <path d="M482 220 L472 220" fill="none" stroke="#EA580C" stroke-width="1.4" marker-end="url(#d1)"/>
+  <path d="M482 284 L472 284" fill="none" stroke="#EA580C" stroke-width="1.4" marker-end="url(#d1)"/>
+
+  <rect x="28" y="392" width="824" height="58" rx="6" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="44" y="416" font-size="11.5" fill="#475569">出系统前最后两道：verify 核对金额与论断是否挂在本次检索规则上；办理必须过确认中断，出票工具不进决策工具白名单</text>
+  <text x="44" y="436" font-size="11" fill="#64748B">现状：边界靠角色位划分加后验核查，不可信数据尚无单独清洗层与分隔标记，接入外部规则源前需要补齐</text>
+
+  <defs>
+    <marker id="d1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#EA580C"/></marker>
+  </defs>
+</svg>

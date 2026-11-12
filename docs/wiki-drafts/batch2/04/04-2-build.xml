@@ -1,0 +1,62 @@
+<title>04.2 落地与代码</title>
+<p>这一节把方法对到代码上：真实的检索漏斗长什么样、每层参数取自哪里、各模块当前状态如何、降级路径怎么走。所有状态判断都指到具体文件，你可以自己打开验证，不要凭印象在面试里说「我们做了」。</p>
+<h1>五层检索漏斗</h1>
+<p>下图是 air_agent/retrieval.py 里 search 函数装配出来的真实顺序。读的时候注意两件事：候选数量在哪一层收敛，以及模型或向量库不可用时每一层退到什么实现。</p>
+<whiteboard type="svg" path="@./fig-funnel.svg"></whiteboard>
+<p><b>读图要点</b></p>
+<ul>
+<li>这张图要回答「一句口语诉求怎么收敛成三条可注入的依据」：双路召回保别漏，硬过滤裁掉字段不符，精排排准，阈值和 MMR 去冗余，最后过引用核查；每层剩几条都写进 funnel 留痕。</li>
+<li>右侧橙色列是容易被忽略的降级面：召回、精排各有 fallback 实现，画像加权不能把低于门槛的结果抬上来，泛化改写只做一次；检索降级不改变最终费用由引擎判定这一口径。</li>
+<li>读到这张图应该改变的判断是：漏斗参数不是拍脑袋的常数，k_recall 60、k_fuse 40、k_rerank 10、k_mmr 5、k_inject 3、rerank_min 0.6、mmr_lambda 0.7 都在 settings.py 的 retrieval 段集中配置，可在管理配置接口调整并回归评测。</li>
+</ul>
+<h1>模块与代码落点</h1>
+<table>
+<colgroup><col width="180"/><col width="250"/><col width="250"/><col width="140"/></colgroup>
+<thead><tr><th><p>模块</p></th><th><p>职责</p></th><th><p>代码路径</p></th><th><p>状态</p></th></tr></thead>
+<tbody>
+<tr><td><p><b>规则领域端口</b></p></td><td><p>PolicyRepository 协议：按编号取规则、按航司/舱位/票种/场景列规则</p></td><td><p>backend/app/domain/policy/ports.py</p></td><td><p>部分实现（仅端口，无实体与适用判定服务）</p></td></tr>
+<tr><td><p><b>检索引擎</b></p></td><td><p>双路召回、RRF 融合、硬过滤、精排、阈值截断、MMR 去冗余、注入与逐层留痕</p></td><td><p>air_agent/retrieval.py：Index、search、_rerank、_mmr</p></td><td><p>已落地（legacy 兼容层内运行）</p></td></tr>
+<tr><td><p><b>检索工具入参</b></p></td><td><p>tool_rule_retrieve 的参数 schema、结构化字段校验与 filters 透传</p></td><td><p>air_agent/tools.py：RuleRetrieveArgs、run_tool</p></td><td><p>已落地</p></td></tr>
+<tr><td><p><b>规则数据结构</b></p></td><td><p>rules 表结构、规则版本号、新增/更新/删除时递增版本</p></td><td><p>air_agent/data.py：rules 表、rules_version、upsert_rule</p></td><td><p>已落地（legacy SQLite 投影）</p></td></tr>
+<tr><td><p><b>规则主数据</b></p></td><td><p>规则编号、四维字段、版本号、停用标记、更新时间与审计</p></td><td><p>backend/app/adapters/outbound/postgres/models.py：RuleRecord</p></td><td><p>已落地</p></td></tr>
+<tr><td><p><b>规则管理接口</b></p></td><td><p>按航司/舱位/票种/场景筛选查询，新增/更新/停用规则并写审计记录</p></td><td><p>backend/app/adapters/inbound/http/admin.py：GET/PUT /api/v1/admin/rules</p></td><td><p>已落地（管理员鉴权）</p></td></tr>
+<tr><td><p><b>投影同步</b></p></td><td><p>把 PostgreSQL 活跃规则同步为 legacy 检索索引，同步后失效索引缓存</p></td><td><p>backend/app/adapters/outbound/legacy/policy_sync.py</p></td><td><p>部分实现（单向同步，运行时索引仍在 legacy）</p></td></tr>
+<tr><td><p><b>向量检索适配器</b></p></td><td><p>Qdrant 客户端、嵌入模型、重排器的独立封装与端口实现</p></td><td><p>backend/app/adapters/outbound/qdrant/</p></td><td><p>未完成（目录未落地，客户端在 legacy 检索内直接实例化）</p></td></tr>
+<tr><td><p><b>后置核查</b></p></td><td><p>金额逐项比对、论断短语核查、引用合法性、依据规则必检与置信度阈值</p></td><td><p>air_agent/verify.py：check、_threshold</p></td><td><p>已落地（legacy 兼容层内运行）</p></td></tr>
+<tr><td><p><b>检索留痕透出</b></p></td><td><p>候选规则、漏斗各层计数、后端模式与降级原因随子诉求结果进入案件 trace</p></td><td><p>air_agent/graph.py：sub_done 节点</p></td><td><p>部分实现（v1 未单独挂检索调试路由）</p></td></tr>
+</tbody>
+</table>
+<h1>代码落点说明</h1>
+<p>依赖方向上，domain/policy 只定义取规则的端口，不依赖任何框架和存储；规则主数据落在 PostgreSQL，是业务事实来源；legacy 检索索引是 PostgreSQL 的只读投影，由 policy_sync 在规则更新后重建并失效缓存。当前运行时，工具调用链是 tools.py 调 air_agent/retrieval.py，检索读 legacy 索引；新层通过兼容边界反向调用旧模块，属于迁移期桥接。目标形态是检索能力沉到 application 端口之后，由独立的 outbound/qdrant 适配器实现向量库、嵌入和重排，domain 侧再补规则实体与适用性判定服务。</p>
+<p>检索调试这一块需要说准：旧版设计里有独立的 /api/rules/search-debug 路由，用来调试检索结果、过滤条件和耗时；收敛到 15 条版本化接口后，规则搜索调试并入管理员规则查询，v1 没有单独暴露调试路由。漏斗留痕仍然保留，只是随案件结果和评测报告透出，不对外单独成接口。</p>
+<h1>检索之后的分流与转人工出口</h1>
+<p>检索候选进入方案生成之前，还要过确定性引擎和后置核查。下面这张图回答的是「候选之后哪些走向报价、哪些必须停下转人工」。</p>
+<whiteboard type="svg" path="@./fig-handoff.svg"></whiteboard>
+<p><b>读图要点</b></p>
+<ul>
+<li>这张图要回答「命中规则为什么不等于能办」：引擎先出资格和金额，verify 再核对金额与引用；两条都过才进报价快照，核查不过带反馈重写一次，仍不过才转人工。</li>
+<li>四类转人工出口里，版本冲突最容易被误写成「模型自动选最新版」：当前代码没有多版本自动仲裁，多条规则打架时交人工，这一点要在面试里主动说清。</li>
+<li>转人工时原因不是一句「无法处理」，而是把检索候选、引擎结果和核查报错一起写进案件记录和 trace；人工接手看到的上下文和自动链路是同一套留痕。</li>
+</ul>
+<h1>三个过渡实现点，都能在代码里直接验证</h1>
+<p>面试里最容易被追问「你这个真是这么做的吗」。下面三点主动说出来，后面的追问就变成加分项：</p>
+<ol>
+<li><b>领域策略只有端口，检索逻辑仍在 air_agent。</b>domain/policy 下只有 ports.py 的 PolicyRepository 协议，规则列表、字段匹配、召回排序都不在 domain，而在 legacy 的 retrieval.py 和 tools.py。验证方式：打开 backend/app/domain/policy/ports.py，只能看到 get_rule 和 list_rules 两个方法签名；再打开 air_agent/retrieval.py，检索编排全部在那里。</li>
+<li><b>没有独立的 qdrant 适配器，向量客户端在 legacy 内直接实例化。</b>计划中的 adapters/outbound/qdrant 目录尚未落地；QdrantClient、嵌入模型 BGE-small-zh-v1.5 和重排模型 ms-marco-MultiBERT-L-12 都在 air_agent/retrieval.py 的 Index 与模型加载函数里直接创建。验证方式：列出 backend/app/adapters/outbound 下的目录，只有 postgres、redis、legacy、airline、telemetry，没有 qdrant 与 llm 目录。</li>
+<li><b>规则主数据在 PostgreSQL，运行时检索索引是 legacy 投影。</b>后台规则读写走 PostgreSQL 的 RuleRecord，更新时版本递增并写审计；随后 policy_sync 把活跃规则同步进 legacy 索引并调用 retrieval.invalidate()，检索实际读的是这份投影。验证方式：打开 policy_sync.py，先查 RuleRecord.active 为真的行，再逐条写入 legacy_data，最后 invalidate 重建索引。</li>
+</ol>
+<p>这三点都属于迁移期桥接，不是缺陷。共同特征是：旧模块仍承担主链路检索，新层通过兼容边界反向调用。判断成熟度时，看的是有没有把这三点和降级口径写进文档，而不是有没有这三点。</p>
+<h1>与 GlobexAgent 的 RAG 方案对比</h1>
+<table>
+<colgroup><col width="120"/><col width="230"/><col width="230"/><col width="240"/></colgroup>
+<thead><tr><th><p>维度</p></th><th><p>GlobexAgent（商品搜索 RAG）</p></th><th><p>本项目（政策检索）</p></th><th><p>为什么不照搬</p></th></tr></thead>
+<tbody>
+<tr><td><p><b>嵌入与向量库</b></p></td><td>Qdrant + OpenAI 兼容 Embedding，服务端向量化</td><td>Qdrant + 本地 BGE-small-zh-v1.5，模型随服务缓存到本地</td><td>退改规则是封闭中文术语库，本地小模型可离线、版本可控；不依赖外部嵌入服务可用性</td></tr>
+<tr><td><p><b>召回与融合</b></p></td><td>多级关键词/向量降级，按查询形态切换侧重</td><td>BM25 与向量双路各取 Top60，RRF 融合到 Top40</td><td>机票规则代码、舱位、票种名靠关键词命中更稳，双路互补比单路降级更可控</td></tr>
+<tr><td><p><b>重排</b></p></td><td>HTTP Reranker，服务端打分</td><td>本地 FlashRank（ms-marco-MultiBERT-L-12），不可用时退到 BM25 加分向量余弦</td><td>候选量小（融合后 40 条），本地重排延迟可接受；HTTP 重排器多一个外部超时点</td></tr>
+<tr><td><p><b>过滤位置</b></p></td><td>检索结果面向生成，过滤以相关性排序为主</td><td>结构化条件先过滤，再做语义相关性门槛</td><td>机票适用性依赖封闭字段，字段不符的规则语义再相关也不能进候选</td></tr>
+<tr><td><p><b>结论边界</b></p></td><td>RAG 直接支撑商品问答与聚合表达</td><td>检索只找依据，资格与金额由确定性服务裁定，后置核查引用</td><td>退改会动钱，模型和检索不能自行决定可退金额；这是两条 RAG 路线最根本的取舍</td></tr>
+<tr><td><p><b>适合什么</b></p></td><td>商品搜索、资讯聚合、多源比价类问答</td><td>有资格判断、有金额、要求可溯源的交易类取证</td><td>同一套 RAG 不必通吃；本项目借鉴 Globex 的多级降级与过滤原因留痕，不照搬其直接生成结论</td></tr>
+</tbody>
+</table>
+<p>一句话总结这张表：Globex 的 RAG 优化的是「从更多文档里捞出相关内容交给生成」，本项目优化的是「不适用的规则进不来、进来的依据能对上引擎结论」。检索在两边都是手段，但在退改签流程里，手段不能越过裁定者。</p>

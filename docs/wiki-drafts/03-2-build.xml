@@ -1,0 +1,67 @@
+<title>01.2 落地与代码</title>
+<p>这一节把方法落到本项目的六个上下文和目录上。每个域都写清四件事：拥有什么、关键不变量、代码在哪、当前做到什么程度。状态口径按 阅读必看的约定，不夸大。</p>
+<h1>六个业务上下文</h1>
+<table>
+<colgroup><col width="130"/><col width="180"/><col width="230"/><col width="190"/><col width="100"/></colgroup>
+<thead><tr><th><p>上下文</p></th><th><p>拥有什么</p></th><th><p>关键不变量</p></th><th><p>代码路径</p></th><th><p>状态</p></th></tr></thead>
+<tbody>
+<tr><td><p><b>Ticket / Order</b></p></td><td><p>订单、客票、乘机人、航段与票联状态</p></td><td><p>订单只属于当前已验证用户；票联状态不能跳变</p></td><td><p>backend/app/domain/ticket</p></td><td><p>部分实现，目前只有仓储端口，实体仍在 legacy</p></td></tr>
+<tr><td><p><b>Policy</b></p></td><td><p>票规条件、来源、生效版本、适用判定</p></td><td><p>同一航司、舱位、场景只能命中一个生效版本</p></td><td><p>backend/app/domain/policy</p></td><td><p>部分实现，检索与判定仍在 air_agent</p></td></tr>
+<tr><td><p><b>Servicing</b></p></td><td><p>案件、澄清、确认、人工复核</p></td><td><p>终态不可回退；确认必须绑定具体报价</p></td><td><p>backend/app/domain/servicing</p></td><td><p>已落地，状态机与聚合可用</p></td></tr>
+<tr><td><p><b>Pricing / Finance</b></p></td><td><p>报价、费用计算、确认后复核、账本分账</p></td><td><p>金额为非负整数；1% 边界用整数交叉相乘；四条资金流不混账</p></td><td><p>backend/app/domain/pricing、domain/finance</p></td><td><p>部分实现，权益减免未接入报价</p></td></tr>
+<tr><td><p><b>Loyalty</b></p></td><td><p>等级、额度、有效期、核销记录</p></td><td><p>权益只能降低旅客应付，不能改航司应收</p></td><td><p>backend/app/domain/loyalty</p></td><td><p>部分实现，额度模型有，核销未闭环</p></td></tr>
+<tr><td><p><b>Fulfillment</b></p></td><td><p>办理命令、幂等键、回执、对账</p></td><td><p>同一幂等键只能产生一次外部动作</p></td><td><p>backend/app/domain/fulfillment</p></td><td><p>部分实现，幂等对象有，回执对账未闭环</p></td></tr>
+</tbody>
+</table>
+<p>这张表里最容易被讲错的是 Ticket。它现在只有仓储端口，没有完整实体，看起来像「没做」。真实原因是演进顺序：先把边界和端口立住，实体从 legacy 里一点点搬，避免一次性重写把金额口径搞乱。</p>
+<h1>依赖方向</h1>
+<p>先看图，再对照代码目录。图的读法是「箭头指向被依赖方」，所以箭头整体向内。</p>
+<whiteboard type="svg" path="@./hexagon.svg"></whiteboard>
+<p><b>读图要点</b></p>
+<ul>
+<li>领域层在立方体最里面，六个上下文并列，没有谁依赖谁；跨域协作由应用层编排，不在域之间直接调用。</li>
+<li>出站适配器实现应用层声明的端口。注意方向：端口定义在里层，实现落在外层，不是反过来。</li>
+<li>入站和出站分开，是为了让「谁能写」变成结构问题：写操作只能从入站路由进来，经过用例和确认门禁。</li>
+</ul>
+<h1>一次改签怎么穿过六个域</h1>
+<whiteboard type="mermaid" path="@./cross-domain.mmd"></whiteboard>
+<p><b>读图要点</b></p>
+<ul>
+<li>顺序不是随手排的：Ticket 先于 Policy，因为票规要看舱位和票面；Loyalty 在 Pricing 之前，因为权益要先算进应付。</li>
+<li>确认是一个分支点，不是一个提示；未确认就走到终态，系统不产生任何写操作。</li>
+<li>账本在办理之后写，不是之后补；Finance 拿到的是已确认金额和实际回执，两者不等时进对账，而不是改报价。</li>
+</ul>
+<h1>与 GlobexAgent 的差异</h1>
+<table>
+<colgroup><col width="120"/><col width="230"/><col width="230"/><col width="270"/></colgroup>
+<thead><tr><th><p>维度</p></th><th><p>GlobexAgent</p></th><th><p>本项目</p></th><th><p>为什么不照搬</p></th></tr></thead>
+<tbody>
+<tr><td><p><b>分层</b></p></td><td><p>DDD 洋葱四层</p></td><td><p>六边形加六个业务上下文</p></td><td><p>机票外部系统更多，且每个通道要能单独演练与降级</p></td></tr>
+<tr><td><p><b>Agent</b></p></td><td><p>AgentScope 加主、搜索、交易三个 Agent</p></td><td><p>LangGraph 加主、方案、交易三个 Agent</p></td><td><p>退改需要中断、恢复和检查点，流程图比动态派发更合适</p></td></tr>
+<tr><td><p><b>交易</b></p></td><td><p>幂等键防重复下单</p></td><td><p>确认绑定报价、金额、操作和幂等键</p></td><td><p>退改涉及资金与客票状态，只有幂等键不够</p></td></tr>
+<tr><td><p><b>存储</b></p></td><td><p>SQLite 为主</p></td><td><p>PostgreSQL 加事务外发</p></td><td><p>账本、审计、并发确认需要事务约束</p></td></tr>
+<tr><td><p><b>检索</b></p></td><td><p>向量加精排，多级降级</p></td><td><p>结构化条件优先，混合检索辅助</p></td><td><p>规则能不能适用不能交给模型判断</p></td></tr>
+</tbody>
+</table>
+<h1>代码落点与状态</h1>
+<table>
+<colgroup><col width="230"/><col width="220"/><col width="250"/><col width="120"/></colgroup>
+<thead><tr><th><p>目录</p></th><th><p>作用</p></th><th><p>关键文件</p></th><th><p>状态</p></th></tr></thead>
+<tbody>
+<tr><td><p>domain/{ticket, policy, servicing, pricing, finance, loyalty, fulfillment}</p></td><td><p>业务对象、不变量、端口声明</p></td><td><p>quote.py、price_review.py、case.py、state.py、operation.py、ledger.py、benefit.py、tier.py</p></td><td><p>部分实现</p></td></tr>
+<tr><td><p>application/{cases, ports, agents}</p></td><td><p>用例编排、端口聚合、Agent 门面</p></td><td><p>cases/service.py、ports/services.py、agents/{main,solution,transaction}_agent.py</p></td><td><p>部分实现</p></td></tr>
+<tr><td><p>application/orchestration</p></td><td><p>LangGraph 状态图、节点、中断恢复</p></td><td><p>计划中，尚未落地</p></td><td><p>未完成</p></td></tr>
+<tr><td><p>adapters/inbound/http</p></td><td><p>路由、鉴权、错误封装</p></td><td><p>cases.py、orders.py、admin.py、auth.py、errors.py、health.py</p></td><td><p>已落地</p></td></tr>
+<tr><td><p>adapters/outbound/postgres</p></td><td><p>模型、仓储、工作单元</p></td><td><p>models.py、repositories.py、unit_of_work.py、seed.py</p></td><td><p>部分实现</p></td></tr>
+<tr><td><p>adapters/outbound/{redis, airline, telemetry}</p></td><td><p>事件与队列、航司 mock、链路追踪</p></td><td><p>streams.py、event_bus.py、mock.py、tracing.py</p></td><td><p>部分实现</p></td></tr>
+<tr><td><p>adapters/outbound/legacy</p></td><td><p>旧版对话、运价、检索的兼容边界</p></td><td><p>ticket_service.py、policy_sync.py</p></td><td><p>过渡实现</p></td></tr>
+<tr><td><p>api/main.py</p></td><td><p>15 条版本化路由的组装</p></td><td><p>main.py</p></td><td><p>已落地</p></td></tr>
+</tbody>
+</table>
+<h1>三个过渡点，不要在面试里说成已完成</h1>
+<ol>
+<li><b>旧版模块仍在承担主链路。</b>air_agent 里还有对话图、运价引擎和检索，新层通过 adapters/outbound/legacy 反向调用；这不是最终形态，是迁移期的桥。</li>
+<li><b>没有统一的装配根。</b>依赖仍在各处 import 拼接，目标是由一个组装点决定用哪个实现；现在换实现要改多处。</li>
+<li><b>三 Agent 还是门面类。</b>application/agents 下的三个类目前是权限门面加 legacy 转发，还没拆成独立子图，也没做逐 Agent 的权限测试。</li>
+</ol>
+<p>这三点都能在代码里直接验证：打开 legacy 适配器看它 import 了什么，打开 agents 目录看 run_turn 转到哪里，打开 application 目录看有没有 orchestration。讲项目时先把它们说出来，后面的追问就变成加分项。</p>

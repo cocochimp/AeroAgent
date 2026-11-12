@@ -1,0 +1,54 @@
+<title>03.2 落地与代码</title>
+<p>这一节把方法对到代码上：本项目的工具到底有几个、Schema 怎么定义的、哪些在模型白名单里、确认命令是怎么构造的、幂等键在数据库哪一层兜底。所有状态判断都指到具体文件，你可以自己打开验证。</p>
+<h1>工具清单与权限边界</h1>
+<p>下图是本项目 tools.py 里真实的工具分布。注意两个集合的差集：SCHEMAS 里有五个工具类，但 REACT_TOOLS 白名单里只有四个。差集就是写出口。</p>
+<whiteboard type="svg" path="@./fig-confirm-binding.svg"></whiteboard>
+<p><b>读图要点</b></p>
+<ul>
+<li>这张图要回答的是「写操作怎么从报价走到航司」：模型不参与这一步，quote_id、action、amount 全部从服务端的报价记录读出来，幂等键是客户端唯一传入的东西。</li>
+<li>注意 amount 不是从用户请求里读的——它是服务端复核后写入 OperationRecord 的。用户不能在确认请求里自己报金额。</li>
+<li>评审一个交易流程时，先找「谁构造了写命令的参数」。如果参数里有任何字段来自模型输出或用户请求，安全设计就有漏洞。</li>
+</ul>
+<h1>模块与代码落点</h1>
+<table>
+<colgroup><col width="180"/><col width="250"/><col width="250"/><col width="140"/></colgroup>
+<thead><tr><th><p>模块</p></th><th><p>职责</p></th><th><p>代码路径</p></th><th><p>状态</p></th></tr></thead>
+<tbody>
+<tr><td><p><b>工具 Schema 定义</b></p></td><td><p>五个 Pydantic 模型：FlightStatusArgs、RuleRetrieveArgs、RecalcFeeArgs、FinishArgs、IssueTicketArgs</p></td><td><p>air_agent/tools.py：SCHEMAS</p></td><td><p>已落地（legacy 包内）</p></td></tr>
+<tr><td><p><b>只读白名单</b></p></td><td><p>REACT_TOOLS 列表决定模型能选哪些工具；tool_issue_ticket 被排除在外</p></td><td><p>air_agent/tools.py：REACT_TOOLS</p></td><td><p>已落地</p></td></tr>
+<tr><td><p><b>参数校验</b></p></td><td><p>validate() 返回结构化错误：field、kind（MISSING/TYPE/ENUM）、expected、message</p></td><td><p>air_agent/tools.py：validate()、_kind()、_expected()</p></td><td><p>已落地</p></td></tr>
+<tr><td><p><b>工具执行入口</b></p></td><td><p>run_tool() 统一执行只读工具；issue_ticket() 独立函数，不经过 run_tool</p></td><td><p>air_agent/tools.py：run_tool()、issue_ticket()</p></td><td><p>已落地</p></td></tr>
+<tr><td><p><b>前置证据门禁</b></p></td><td><p>算费前必须先调用 tool_rule_retrieve，否则返回 SKIP_RULE 并打回</p></td><td><p>air_agent/graph.py：checkpoint_gate()</p></td><td><p>已落地</p></td></tr>
+<tr><td><p><b>确认命令构造</b></p></td><td><p>create_confirmed_operation 从 QuoteRecord 读 quote_id/action/amount，复核后写 OperationRecord</p></td><td><p>backend/app/application/cases/service.py</p></td><td><p>已落地</p></td></tr>
+<tr><td><p><b>幂等键</b></p></td><td><p>同一 idempotency_key 重复请求返回已有操作；并发撞键靠数据库唯一约束</p></td><td><p>cases/service.py：create_confirmed_operation；domain/fulfillment/operation.py</p></td><td><p>部分实现（应用层查重已有，唯一约束未在迁移文件中显式声明）</p></td></tr>
+<tr><td><p><b>命名规范化</b></p></td><td><p>read_ / quote_ / commit_ 前缀替代 tool_ 前缀</p></td><td><p>重构计划 Task 1，尚未实施</p></td><td><p>未完成</p></td></tr>
+<tr><td><p><b>MCP 接入</b></p></td><td><p>通过 MCP 协议暴露或发现外部工具</p></td><td><p>项目未引入 MCP</p></td><td><p>未完成</p></td></tr>
+</tbody>
+</table>
+<h1>三个过渡实现点，都能在代码里直接验证</h1>
+<ol>
+<li><b>tool_issue_ticket 被 SCHEMAS 和 REACT_TOOLS 双重管理。</b>它在 SCHEMAS 里（因为 issue_ticket() 函数需要校验参数格式），但不在 REACT_TOOLS 列表里（因为模型不应该自由调用它）。这意味着写操作的参数校验是通过独立函数做的，不是通过模型的工具循环。验证方式：打开 tools.py 第 64 行看 SCHEMAS 字典和第 66 行 REACT_TOOLS 列表，差集就是 tool_issue_ticket。</li>
+<li><b>确认命令的参数全部来自服务端，不来自模型。</b>tool_issue_ticket 节点（graph.py 第 292 行）从 state["confirm"] 和 state["results"] 里读出 order_id、action、confirm_id、target_date、target_flight，然后调用 tools.issue_ticket()。模型输出不直接参与写操作参数。验证方式：看 tool_issue_ticket 节点函数，args 字典的每个字段都能在 state 里找到来源。</li>
+<li><b>幂等保护分两层：应用层查重 + 写事务里的数据库约束。</b>issue_ticket() 函数在 data.transaction() 里先 SELECT WHERE confirm_id=?，命中就直接返回已有结果（带 idempotent: True）。但 SELECT 不是原子的，并发两个请求可能同时查到没有。真正的并发保护靠 tickets 表的 confirm_id 唯一约束。验证方式：看 tools.py 第 168-174 行的事务块，以及 legacy data 模块里 tickets 表的建表语句。</li>
+</ol>
+<h1>幂等键的完整链路</h1>
+<whiteboard type="svg" path="@./fig-idempotency.svg"></whiteboard>
+<p><b>读图要点</b></p>
+<ul>
+<li>这张图要回答的是「幂等键到底防的是什么」：不是防用户重复点确认（那是业务层的事），而是防网络重试、worker 重放、用户双击这些系统级重复。</li>
+<li>注意并发撞键那一行——应用层先查再写有窗口期，唯一约束是最后一道防线。如果你的项目只有应用层查重没有唯一索引，并发下还是会重复扣款。</li>
+<li>读到这张图应该改变的判断：不要说「我们做了幂等」，要能说清「幂等键在哪个表、有没有唯一索引、撞键时返回什么」。</li>
+</ul>
+<h1>与目标命名规范的差距</h1>
+<table>
+<colgroup><col width="200"/><col width="220"/><col width="220"/><col width="180"/></colgroup>
+<thead><tr><th><p>legacy 命名</p></th><th><p>目标命名</p></th><th><p>职责</p></th><th><p>迁移难度</p></th></tr></thead>
+<tbody>
+<tr><td><p>tool_flight_status</p></td><td><p>read_flight_status</p></td><td><p>查航班实时状态</p></td><td><p>低：改名字 + 改白名单</p></td></tr>
+<tr><td><p>tool_rule_retrieve</p></td><td><p>read_policy</p></td><td><p>检索退改规则</p></td><td><p>低：改名字</p></td></tr>
+<tr><td><p>tool_recalc_fee</p></td><td><p>quote_fee</p></td><td><p>计算退改费用（不写库）</p></td><td><p>中：语义从「重新算」变成「报价」</p></td></tr>
+<tr><td><p>tool_issue_ticket</p></td><td><p>commit_ticket</p></td><td><p>办理改签/退票（写库 + 调外部）</p></td><td><p>中：要确认它从模型列表里完全移除</p></td></tr>
+<tr><td><p>finish</p></td><td><p>（内部信号，不暴露给模型）</p></td><td><p>标记子诉求完成</p></td><td><p>低：从 REACT_TOOLS 移除，改成内部节点</p></td></tr>
+</tbody>
+</table>
+<p>这个迁移不是为了好看。命名规范化的真正价值是：当工具列表超过十个、或者有新的工程师加入时，扫一眼名字就知道哪些能放开调、哪些必须门禁。在本项目只有四个工具的阶段，靠白名单还能管；工具数量上来之后，命名前缀就是最便宜的权限文档。</p>

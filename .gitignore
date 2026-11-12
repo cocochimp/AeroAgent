@@ -7,3 +7,9 @@ config.json
 .pytest_cache/
 .DS_Store
 .idea/
+.env
+node_modules/
+frontend/dist/
+.ruff_cache/
+.mypy_cache/
+backend/**/__pycache__/

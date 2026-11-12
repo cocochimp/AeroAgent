@@ -1,0 +1,78 @@
+[
+  {
+    "user_id": "u_zhang",
+    "name": "张三",
+    "tier": "金卡",
+    "data": {
+      "routes": {
+        "HGH-PEK": 8,
+        "PEK-HGH": 6
+      },
+      "airlines": {
+        "MU": 10
+      },
+      "products": {
+        "Y_DISCOUNT": 9
+      },
+      "prefer_action": {
+        "CHANGE": 5,
+        "REFUND": 1
+      },
+      "price_sensitivity": "高"
+    }
+  },
+  {
+    "user_id": "u_li",
+    "name": "李四",
+    "tier": "银卡",
+    "data": {
+      "routes": {
+        "PEK-CTU": 4
+      },
+      "airlines": {
+        "HU": 3,
+        "CA": 2
+      },
+      "products": {
+        "Y": 3,
+        "F": 2
+      },
+      "prefer_action": {
+        "REFUND": 2
+      },
+      "price_sensitivity": "中"
+    }
+  },
+  {
+    "user_id": "u_wang",
+    "name": "王五",
+    "tier": "普卡",
+    "data": {
+      "routes": {},
+      "airlines": {},
+      "products": {},
+      "prefer_action": {},
+      "price_sensitivity": "低"
+    }
+  },
+  {
+    "user_id": "u_zhao",
+    "name": "赵六",
+    "tier": "黑钻",
+    "data": {
+      "routes": {
+        "HGH-PEK": 5
+      },
+      "airlines": {
+        "HU": 8
+      },
+      "products": {
+        "C": 4
+      },
+      "prefer_action": {
+        "CHANGE": 4
+      },
+      "price_sensitivity": "低"
+    }
+  }
+]

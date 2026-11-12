@@ -1,0 +1,132 @@
+[
+  {
+    "user_id": "u_zhang",
+    "airline": "MU",
+    "route_idx": 0,
+    "fare_product": "Y_DISCOUNT",
+    "day_offset": 2,
+    "passenger": "张三",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_zhang",
+    "airline": "MU",
+    "route_idx": 1,
+    "fare_product": "Y_DISCOUNT",
+    "day_offset": 5,
+    "passenger": "张三",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_zhang",
+    "airline": "CA",
+    "route_idx": 2,
+    "fare_product": "C",
+    "day_offset": 10,
+    "passenger": "张三",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_li",
+    "airline": "CZ",
+    "route_idx": 4,
+    "fare_product": "SPECIAL",
+    "day_offset": 1,
+    "passenger": "李四",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_li",
+    "airline": "HU",
+    "route_idx": 3,
+    "fare_product": "Y",
+    "day_offset": 0,
+    "passenger": "李四",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_li",
+    "airline": "CA",
+    "route_idx": 3,
+    "fare_product": "F",
+    "day_offset": 8,
+    "passenger": "李四",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_wang",
+    "airline": "MU",
+    "route_idx": 2,
+    "fare_product": "Y",
+    "day_offset": 1,
+    "passenger": "王五",
+    "flight_status": "cancelled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_wang",
+    "airline": "CZ",
+    "route_idx": 0,
+    "fare_product": "Y_DISCOUNT",
+    "day_offset": 3,
+    "passenger": "王五",
+    "flight_status": "delayed",
+    "delay_min": 150
+  },
+  {
+    "user_id": "u_wang",
+    "airline": "HU",
+    "route_idx": 4,
+    "fare_product": "GROUP",
+    "day_offset": 4,
+    "passenger": "王五",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_zhang",
+    "airline": "CZ",
+    "route_idx": 2,
+    "fare_product": "Y",
+    "day_offset": -1,
+    "passenger": "张三",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_li",
+    "airline": "MU",
+    "route_idx": 0,
+    "fare_product": "Y",
+    "day_offset": 6,
+    "passenger": "李四",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_wang",
+    "airline": "CA",
+    "route_idx": 0,
+    "fare_product": "SPECIAL",
+    "day_offset": 2,
+    "passenger": "王五",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  },
+  {
+    "user_id": "u_zhao",
+    "airline": "HU",
+    "route_idx": 0,
+    "fare_product": "C",
+    "day_offset": 3,
+    "passenger": "赵六",
+    "flight_status": "scheduled",
+    "delay_min": 0
+  }
+]

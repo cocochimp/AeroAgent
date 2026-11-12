@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "679bacc5-7c44-4ea5-b43c-d346a5c6ec8d",
+  "status": "current",
+  "command": "deliver",
+  "type": "sequence",
+  "input": "/Users/Doc/agent/air-ticket-agent/.archify/sequence-ticket-change-mainline-20261111-213248/candidate.json",
+  "output": "/Users/Doc/agent/air-ticket-agent/.archify/sequence-ticket-change-mainline-20261111-213248/ticket-change-mainline.html",
+  "specification": {
+    "sha256": "873af407d0c4a94c57472ee48c704901104ab7092b6492ecff72e3a67733fdaa",
+    "bytes": 7073
+  },
+  "artifact": {
+    "sha256": "34b79acd8415a326b7450dfbe2ec8f163646423402bfb0ab8fba696204a3f15a",
+    "bytes": 848848
+  }
+}

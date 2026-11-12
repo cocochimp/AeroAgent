@@ -5,6 +5,7 @@ import threading
 from datetime import datetime
 from contextlib import contextmanager
 from . import seed
+from .demo_data import load_demo_seed
 from . import settings as S
 
 _init_lock = threading.Lock()
@@ -77,20 +78,19 @@ def init(force: bool = False):
             return
         for t in ("flights", "orders", "profiles", "fee_rules", "rules"):
             c.execute(f"DELETE FROM {t}")
-        today = now.date()
-        fl = seed.flights(today)
-        od = seed.orders(today, now, fl)
+        fixture = load_demo_seed(now)
+        fl, od = fixture["flights"], fixture["orders"]
         c.executemany("INSERT INTO flights VALUES(:flight_no,:date,:airline,:origin,:dest,:origin_city,"
                       ":dest_city,:dep_time,:duration_min,:status,:delay_min,:fares)",
                       [{**f, "fares": json.dumps(f["fares"])} for f in fl])
         c.executemany("INSERT INTO orders VALUES(:order_id,:user_id,:passenger,:flight_no,:date,:airline,"
                       ":cabin,:fare_product,:fare,:tax,:status,:ticket_no)", od)
         c.executemany("INSERT INTO profiles VALUES(:user_id,:name,:tier,:data)",
-                      [{**p, "data": json.dumps(p["data"], ensure_ascii=False)} for p in seed.PROFILES])
+                      [{**p, "data": json.dumps(p["data"], ensure_ascii=False)} for p in fixture["profiles"]])
         c.executemany("INSERT INTO fee_rules VALUES(?,?,?)",
-                      [(al, prod, json.dumps(t)) for (al, prod), t in seed.fee_table().items()])
+                      [(row["airline"], row["fare_product"], json.dumps(row["data"])) for row in fixture["fee_rules"]])
         c.executemany("INSERT INTO rules VALUES(:id,:airline,:cabin,:fare_product,:scenario,:title,:content,:ts)",
-                      [{**r, "ts": now.isoformat()} for r in seed.rules()])
+                      [{**r, "ts": now.isoformat()} for r in fixture["policy_rules"]])
         c.execute("INSERT OR REPLACE INTO meta VALUES('seeded', ?)", (now.isoformat(),))
         _bump_rules_version(c)
 

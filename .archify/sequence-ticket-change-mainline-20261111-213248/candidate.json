@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "机票退改签全链路",
+    "locale": "zh-CN",
+    "output": ".archify/sequence-ticket-change-mainline-20261111-213248/ticket-change-mainline.html",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    {
+      "id": "traveler",
+      "type": "external",
+      "label": "旅客",
+      "sublabel": "输入诉求 / 点击确认"
+    },
+    {
+      "id": "main_agent",
+      "type": "backend",
+      "label": "主 Agent",
+      "sublabel": "识别意图 / 编排流程"
+    },
+    {
+      "id": "solution_agent",
+      "type": "backend",
+      "label": "方案 Agent",
+      "sublabel": "只读核验 / 组织方案"
+    },
+    {
+      "id": "business_core",
+      "type": "database",
+      "label": "业务服务",
+      "sublabel": "订单 · 规则 · 运价 · 会员"
+    },
+    {
+      "id": "transaction_agent",
+      "type": "security",
+      "label": "交易 Agent",
+      "sublabel": "确认后执行 / 幂等控制"
+    },
+    {
+      "id": "airline",
+      "type": "cloud",
+      "label": "航司模拟接口",
+      "sublabel": "退改提交 / 状态回执"
+    }
+  ],
+  "segments": [
+    {
+      "from": 160,
+      "to": 300,
+      "label": "1 · 受理与补充信息"
+    },
+    {
+      "from": 310,
+      "to": 520,
+      "label": "2 · 只读核验与报价"
+    },
+    {
+      "from": 530,
+      "to": 680,
+      "label": "3 · 用户确认与二次复核"
+    },
+    {
+      "from": 690,
+      "to": 930,
+      "label": "4 · 交易执行与结果处理"
+    }
+  ],
+  "messages": [
+    {
+      "id": "request",
+      "from": "traveler",
+      "to": "main_agent",
+      "y": 170,
+      "label": "提交改签 / 退票诉求",
+      "variant": "emphasis"
+    },
+    {
+      "id": "scope-check",
+      "from": "main_agent",
+      "to": "business_core",
+      "y": 200,
+      "label": "按登录身份校验订单权限",
+      "variant": "security"
+    },
+    {
+      "id": "scope-result",
+      "from": "business_core",
+      "to": "main_agent",
+      "y": 230,
+      "label": "本人订单候选 / 越权拒绝",
+      "variant": "return"
+    },
+    {
+      "id": "clarify",
+      "from": "main_agent",
+      "to": "traveler",
+      "y": 260,
+      "label": "信息缺失时追问订单或日期",
+      "variant": "default"
+    },
+    {
+      "id": "clarify-answer",
+      "from": "traveler",
+      "to": "main_agent",
+      "y": 290,
+      "label": "补充信息（如需）",
+      "variant": "return"
+    },
+    {
+      "id": "delegate-plan",
+      "from": "main_agent",
+      "to": "solution_agent",
+      "y": 325,
+      "label": "发送诉求 + 已授权订单范围",
+      "variant": "emphasis"
+    },
+    {
+      "id": "read-evidence",
+      "from": "solution_agent",
+      "to": "business_core",
+      "y": 360,
+      "label": "只读并行查：票证 / 航变 / 规则 / 可办理状态",
+      "variant": "default"
+    },
+    {
+      "id": "evidence",
+      "from": "business_core",
+      "to": "solution_agent",
+      "y": 395,
+      "label": "返回事实、规则版本与查询结果",
+      "variant": "return"
+    },
+    {
+      "id": "quote-request",
+      "from": "solution_agent",
+      "to": "business_core",
+      "y": 430,
+      "label": "请求资格核定与费用报价",
+      "variant": "default"
+    },
+    {
+      "id": "quote-result",
+      "from": "business_core",
+      "to": "solution_agent",
+      "y": 465,
+      "label": "返回资格、金额、会员权益与 quote_id",
+      "variant": "return"
+    },
+    {
+      "id": "plan-result",
+      "from": "solution_agent",
+      "to": "main_agent",
+      "y": 500,
+      "label": "返回证据与可选方案",
+      "variant": "return"
+    },
+    {
+      "id": "show-quote",
+      "from": "main_agent",
+      "to": "traveler",
+      "y": 535,
+      "label": "展示方案、金额明细与规则依据",
+      "variant": "emphasis"
+    },
+    {
+      "id": "confirm",
+      "from": "traveler",
+      "to": "main_agent",
+      "y": 570,
+      "label": "点击确认 quote_id / 取消则结束",
+      "variant": "security"
+    },
+    {
+      "id": "confirmed-command",
+      "from": "main_agent",
+      "to": "transaction_agent",
+      "y": 605,
+      "label": "提交绑定报价的确认指令",
+      "variant": "security",
+      "note": "确认凭证绑定订单、操作类型、方案金额和 confirm_id。"
+    },
+    {
+      "id": "revalidate",
+      "from": "transaction_agent",
+      "to": "business_core",
+      "y": 640,
+      "label": "复核订单、库存、规则、权益和报价有效期",
+      "variant": "security"
+    },
+    {
+      "id": "revalidate-result",
+      "from": "business_core",
+      "to": "transaction_agent",
+      "y": 675,
+      "label": "通过才授权；变化则拒绝旧报价",
+      "variant": "return"
+    },
+    {
+      "id": "submit",
+      "from": "transaction_agent",
+      "to": "airline",
+      "y": 710,
+      "label": "幂等提交退改操作",
+      "variant": "security"
+    },
+    {
+      "id": "airline-result",
+      "from": "airline",
+      "to": "transaction_agent",
+      "y": 745,
+      "label": "成功 / 失败 / 结果未知",
+      "variant": "return"
+    },
+    {
+      "id": "persist-result",
+      "from": "transaction_agent",
+      "to": "business_core",
+      "y": 780,
+      "label": "记录操作状态与外部回执",
+      "variant": "dashed"
+    },
+    {
+      "id": "operation-status",
+      "from": "transaction_agent",
+      "to": "main_agent",
+      "y": 815,
+      "label": "返回办理结果或待核实状态",
+      "variant": "return"
+    },
+    {
+      "id": "requote",
+      "from": "main_agent",
+      "to": "solution_agent",
+      "y": 850,
+      "label": "条件变化时重新取证报价",
+      "variant": "dashed"
+    },
+    {
+      "id": "final",
+      "from": "main_agent",
+      "to": "traveler",
+      "y": 885,
+      "label": "展示成功 / 新报价 / 人工跟进",
+      "variant": "emphasis"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "main_agent",
+      "from": 170,
+      "to": 900,
+      "type": "backend"
+    },
+    {
+      "participant": "solution_agent",
+      "from": 325,
+      "to": 865,
+      "type": "backend"
+    },
+    {
+      "participant": "business_core",
+      "from": 200,
+      "to": 785,
+      "type": "database"
+    },
+    {
+      "participant": "transaction_agent",
+      "from": 605,
+      "to": 815,
+      "type": "security"
+    },
+    {
+      "participant": "airline",
+      "from": 710,
+      "to": 750,
+      "type": "cloud"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "权限边界",
+      "items": [
+        "方案 Agent 只读查询本人订单。",
+        "交易 Agent 只有用户确认后才可提交操作。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "金额与安全",
+      "items": [
+        "资格和费用由业务服务核定，Agent 不自行算钱。",
+        "条件变化需重新报价确认；超时未知先查状态，不盲目重试。"
+      ]
+    }
+  ]
+}

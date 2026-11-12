@@ -7,6 +7,7 @@ CLI（在独立沙箱里运行，不影响演示数据）：
 """
 import argparse
 import json
+import math
 import shutil
 import statistics
 import sys
@@ -293,15 +294,16 @@ def run_case(case: dict, mode: str, run_id: str, client=None) -> dict:
         reasons.append("quote_mismatch")
     if outcome == "ANSWER" and "unsupported_claim" in c.forbid and v.get("unsupported_claims"):
         reasons.append("unsupported_claim")
-    passed = not [r for r in reasons if r not in ("wrong_tools", "rule_miss", *c.expect.schema_errors)] \
-        and outcome == c.expect.outcome
+    passed = not reasons and outcome == c.expect.outcome
     tokens = (res.get("context") or {}).get("total", 0)
     return {"case_id": c.id, "title": c.title, "tags": c.tags,
             "group": f"{c.airline or '通用'}·{c.fare_product or '通用'}", "passed": passed, "tool_ok": tool_ok,
             "policy_hit": hit, "reasons": reasons, "ms": ms, "tokens": tokens, "expected": c.expect.model_dump(),
             "actual": {"tools": tools_seq, "intents": [r["intent"] for r in results], "fees": fees,
                        "outcome": outcome, "rule_ids": sorted(retrieved), "text": final.get("text", ""),
-                       "schema_errors": schema_errs},
+                       "schema_errors": schema_errs, "forbidden_hits": [reason for reason in reasons
+                           if reason in {"skip_rule", "quote_mismatch", "unsupported_claim"}],
+                       "verification": v},
             "trace": trace}
 
 
@@ -319,7 +321,7 @@ def summarize(results: list[dict]) -> dict:
             "correctness": round(sum(r["passed"] for r in results) / n, 4),
             "human_rate": round(sum(r["actual"]["outcome"] == "HUMAN" for r in results) / n, 4),
             "latency_avg_ms": round(statistics.mean(lat), 1),
-            "latency_p95_ms": lat[min(len(lat) - 1, int(len(lat) * 0.95))],
+            "latency_p95_ms": lat[min(len(lat) - 1, max(0, math.ceil(len(lat) * 0.95) - 1))],
             "tokens_avg": round(statistics.mean([r["tokens"] for r in results]), 1) if results else 0,
             "failure_reasons": dict(Counter(x for r in results for x in r["reasons"])),
             "by_group": {k: {**v, "rate": round(v["passed"] / v["n"], 4)} for k, v in sorted(groups.items())}}

@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 600" width="880" height="600" font-family="PingFang SC, Hiragino Sans GB, Helvetica Neue, Arial, sans-serif">
+  <rect x="0" y="0" width="880" height="600" fill="#FFFFFF"/>
+  <text x="24" y="32" font-size="18" font-weight="600" fill="#0F172A">六边形依赖方向</text>
+  <text x="24" y="56" font-size="12.5" fill="#64748B">箭头表示依赖方向：外层依赖内层；领域层只声明端口，不认识框架、数据库与队列</text>
+
+  <text x="24" y="86" font-size="12" font-weight="600" fill="#475569">外部系统</text>
+  <text x="210" y="86" font-size="12" font-weight="600" fill="#475569">入站适配器</text>
+  <text x="396" y="86" font-size="12" font-weight="600" fill="#475569">应用层 Application</text>
+  <text x="720" y="86" font-size="12" font-weight="600" fill="#475569">出站适配器</text>
+
+  <rect x="24" y="100" width="150" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="99" y="131" font-size="12" fill="#334155" text-anchor="middle">旅客与浏览器</text>
+  <rect x="24" y="164" width="150" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="99" y="195" font-size="12" fill="#334155" text-anchor="middle">企业身份源</text>
+  <rect x="24" y="228" width="150" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="99" y="259" font-size="12" fill="#334155" text-anchor="middle">航司 / GDS mock</text>
+  <rect x="24" y="292" width="150" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="99" y="323" font-size="12" fill="#334155" text-anchor="middle">LLM / Qdrant</text>
+  <rect x="24" y="356" width="150" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="99" y="387" font-size="12" fill="#334155" text-anchor="middle">PostgreSQL / Redis</text>
+  <rect x="24" y="420" width="150" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-dasharray="4 3"/>
+  <text x="99" y="451" font-size="12" fill="#334155" text-anchor="middle">监控与日志</text>
+
+  <rect x="210" y="136" width="150" height="52" rx="8" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="285" y="167" font-size="12" fill="#7C2D12" text-anchor="middle">FastAPI 路由</text>
+  <rect x="210" y="200" width="150" height="52" rx="8" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="285" y="231" font-size="12" fill="#7C2D12" text-anchor="middle">Bearer / RBAC</text>
+  <rect x="210" y="264" width="150" height="52" rx="8" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="285" y="295" font-size="12" fill="#7C2D12" text-anchor="middle">SSE 事件流</text>
+
+  <rect x="396" y="96" width="290" height="156" rx="10" fill="#F8FAFC" stroke="#64748B"/>
+  <text x="410" y="118" font-size="12" font-weight="600" fill="#334155">应用层 · 编排用例</text>
+  <rect x="408" y="130" width="128" height="44" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="472" y="157" font-size="12" fill="#334155" text-anchor="middle">用例 cases</text>
+  <rect x="548" y="130" width="128" height="44" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="612" y="157" font-size="12" fill="#334155" text-anchor="middle">端口 Ports</text>
+  <rect x="408" y="192" width="128" height="44" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="472" y="219" font-size="12" fill="#334155" text-anchor="middle">编排 LangGraph</text>
+  <rect x="548" y="192" width="128" height="44" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="612" y="219" font-size="12" fill="#334155" text-anchor="middle">三 Agent</text>
+
+  <rect x="396" y="272" width="290" height="272" rx="10" fill="#EFF6FF" stroke="#2563EB"/>
+  <text x="410" y="296" font-size="12" font-weight="600" fill="#1E40AF">领域层 · 纯业务不依赖框架</text>
+  <rect x="408" y="310" width="128" height="56" rx="6" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="472" y="334" font-size="12" fill="#1E3A8A" text-anchor="middle">Ticket / Order</text>
+  <text x="472" y="352" font-size="10.5" fill="#64748B" text-anchor="middle">订单与航段状态</text>
+  <rect x="548" y="310" width="128" height="56" rx="6" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="612" y="334" font-size="12" fill="#1E3A8A" text-anchor="middle">Policy</text>
+  <text x="612" y="352" font-size="10.5" fill="#64748B" text-anchor="middle">票规与版本</text>
+  <rect x="408" y="386" width="128" height="56" rx="6" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="472" y="410" font-size="12" fill="#1E3A8A" text-anchor="middle">Servicing</text>
+  <text x="472" y="428" font-size="10.5" fill="#64748B" text-anchor="middle">案件与确认</text>
+  <rect x="548" y="386" width="128" height="56" rx="6" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="612" y="410" font-size="12" fill="#1E3A8A" text-anchor="middle">Pricing / Finance</text>
+  <text x="612" y="428" font-size="10.5" fill="#64748B" text-anchor="middle">报价与账本</text>
+  <rect x="408" y="462" width="128" height="56" rx="6" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="472" y="486" font-size="12" fill="#1E3A8A" text-anchor="middle">Loyalty</text>
+  <text x="472" y="504" font-size="10.5" fill="#64748B" text-anchor="middle">等级与额度</text>
+  <rect x="548" y="462" width="128" height="56" rx="6" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="612" y="486" font-size="12" fill="#1E3A8A" text-anchor="middle">Fulfillment</text>
+  <text x="612" y="504" font-size="10.5" fill="#64748B" text-anchor="middle">办理与回执</text>
+
+  <rect x="720" y="100" width="150" height="52" rx="8" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="795" y="131" font-size="12" fill="#7C2D12" text-anchor="middle">仓储 PostgreSQL</text>
+  <rect x="720" y="164" width="150" height="52" rx="8" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="795" y="195" font-size="12" fill="#7C2D12" text-anchor="middle">Outbox 与 Streams</text>
+  <rect x="720" y="228" width="150" height="52" rx="8" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="795" y="259" font-size="12" fill="#7C2D12" text-anchor="middle">检索 Qdrant</text>
+  <rect x="720" y="292" width="150" height="52" rx="8" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="795" y="323" font-size="12" fill="#7C2D12" text-anchor="middle">LLM 客户端</text>
+  <rect x="720" y="356" width="150" height="52" rx="8" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="795" y="387" font-size="12" fill="#7C2D12" text-anchor="middle">航司适配器</text>
+  <rect x="720" y="420" width="150" height="52" rx="8" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="795" y="451" font-size="12" fill="#7C2D12" text-anchor="middle">Telemetry</text>
+
+  <path d="M174 126 L202 148" stroke="#94A3B8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M360 162 L392 156" stroke="#94A3B8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M476 244 L476 268" stroke="#94A3B8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="484" y="262" font-size="10.5" fill="#64748B">调用领域服务</text>
+  <path d="M686 150 L712 128" stroke="#94A3B8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="600" y="118" font-size="10.5" fill="#64748B">通过端口调用</text>
+
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+
+  <rect x="24" y="556" width="846" height="30" rx="6" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="40" y="576" font-size="11.5" fill="#475569">领域层 import 白名单：标准库、领域内模块、typing；禁止 fastapi、sqlalchemy、redis、langgraph 与任何供应商 SDK</text>
+</svg>

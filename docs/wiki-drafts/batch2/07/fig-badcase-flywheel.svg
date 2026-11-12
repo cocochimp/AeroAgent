@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 540" width="880" height="540" font-family="PingFang SC, Hiragino Sans GB, Helvetica Neue, Arial, sans-serif">
+  <rect x="0" y="0" width="880" height="540" fill="#FFFFFF"/>
+  <text x="28" y="36" font-size="18" font-weight="600" fill="#0F172A">Bad Case 飞轮</text>
+  <text x="28" y="60" font-size="12.5" fill="#64748B">失败案例经归类、归因、修复后回到回归集；脱敏必须在标注与入集之前完成</text>
+
+  <path fill="none" d="M440 120 A150 150 0 0 1 640 270" stroke="#2563EB" stroke-width="1.8" marker-end="url(#b1)"/>
+  <path fill="none" d="M640 270 A150 150 0 0 1 440 420" stroke="#2563EB" stroke-width="1.8" marker-end="url(#b1)"/>
+  <path fill="none" d="M440 420 A150 150 0 0 1 240 270" stroke="#2563EB" stroke-width="1.8" marker-end="url(#b1)"/>
+  <path fill="none" d="M240 270 A150 150 0 0 1 440 120" stroke="#2563EB" stroke-width="1.8" marker-end="url(#b1)"/>
+
+  <rect x="350" y="94" width="180" height="52" rx="9" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="440" y="116" font-size="12.5" font-weight="600" fill="#1E3A8A" text-anchor="middle">归类</text>
+  <text x="440" y="134" font-size="10.5" fill="#64748B" text-anchor="middle">按场景与错误类型打标</text>
+
+  <rect x="550" y="244" width="180" height="52" rx="9" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="640" y="266" font-size="12.5" font-weight="600" fill="#1E3A8A" text-anchor="middle">归因</text>
+  <text x="640" y="284" font-size="10.5" fill="#64748B" text-anchor="middle">定位到模块与步骤</text>
+
+  <rect x="350" y="394" width="180" height="52" rx="9" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="440" y="416" font-size="12.5" font-weight="600" fill="#1E3A8A" text-anchor="middle">修复</text>
+  <text x="440" y="434" font-size="10.5" fill="#64748B" text-anchor="middle">改对应模块，不打补丁掩盖</text>
+
+  <rect x="150" y="244" width="180" height="52" rx="9" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="240" y="266" font-size="12.5" font-weight="600" fill="#1E3A8A" text-anchor="middle">回归 · 脱敏后入集</text>
+  <text x="240" y="284" font-size="10.5" fill="#64748B" text-anchor="middle">与修复前基线比较</text>
+
+  <rect x="360" y="238" width="160" height="64" rx="10" fill="#EFF6FF" stroke="#2563EB"/>
+  <text x="440" y="264" font-size="12.5" font-weight="600" fill="#1E40AF" text-anchor="middle">五类归因</text>
+  <text x="440" y="284" font-size="10.5" fill="#1E40AF" text-anchor="middle">归因类别决定修复方向</text>
+
+  <rect x="40" y="470" width="148" height="34" rx="7" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="114" y="492" font-size="11" fill="#334155" text-anchor="middle">理解：意图 / 订单 / 指代</text>
+  <rect x="206" y="470" width="148" height="34" rx="7" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="280" y="492" font-size="11" fill="#334155" text-anchor="middle">工具参数：选错或入参错</text>
+  <rect x="372" y="470" width="148" height="34" rx="7" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="446" y="492" font-size="11" fill="#334155" text-anchor="middle">检索：规则未命中或引用错</text>
+  <rect x="538" y="470" width="148" height="34" rx="7" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="612" y="492" font-size="11" fill="#334155" text-anchor="middle">金额：分项或合计偏差</text>
+  <rect x="704" y="470" width="148" height="34" rx="7" fill="#FFF7ED" stroke="#FED7AA"/>
+  <text x="778" y="492" font-size="11" fill="#9A3412" text-anchor="middle">外部接口：超时与回执</text>
+
+  <defs>
+    <marker id="b1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#2563EB"/></marker>
+  </defs>
+</svg>

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 480" width="880" height="480" font-family="PingFang SC, Hiragino Sans GB, Helvetica Neue, Arial, sans-serif">
+  <rect x="0" y="0" width="880" height="480" fill="#FFFFFF"/>
+  <text x="28" y="36" font-size="18" font-weight="600" fill="#0F172A">幂等键：同一请求重复到达，外部动作只发生一次</text>
+  <text x="28" y="60" font-size="12.5" fill="#64748B">数据库唯一约束是最后一道防线，应用层先查再写，撞键就返回已有结果</text>
+
+  <!-- Normal flow -->
+  <rect x="28" y="88" width="400" height="200" rx="10" fill="#EFF6FF" stroke="#2563EB"/>
+  <text x="48" y="116" font-size="12.5" font-weight="600" fill="#1E40AF">首次请求</text>
+
+  <rect x="48" y="132" width="360" height="36" rx="6" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="228" y="155" font-size="11" fill="#1E3A8A" text-anchor="middle">1. 应用层查 OperationRecord.where(idempotency_key=?)</text>
+
+  <rect x="48" y="178" width="360" height="36" rx="6" fill="#FFFFFF" stroke="#93C5FD"/>
+  <text x="228" y="201" font-size="11" fill="#1E3A8A" text-anchor="middle">2. 未命中 → 插入 PENDING 操作 + Outbox 事件</text>
+
+  <rect x="48" y="224" width="360" height="36" rx="6" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="228" y="247" font-size="11" fill="#7C2D12" text-anchor="middle">3. Worker 取 Outbox → 调航司 mock → 更新 SUCCEEDED</text>
+
+  <!-- Duplicate flow -->
+  <rect x="452" y="88" width="400" height="200" rx="10" fill="#F8FAFC" stroke="#CBD5E1"/>
+  <text x="472" y="116" font-size="12.5" font-weight="600" fill="#475569">重复请求（网络重试 / 用户双击）</text>
+
+  <rect x="472" y="132" width="360" height="36" rx="6" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="652" y="155" font-size="11" fill="#334155" text-anchor="middle">1. 应用层查同一 idempotency_key</text>
+
+  <rect x="472" y="178" width="360" height="36" rx="6" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="652" y="201" font-size="11" fill="#334155" text-anchor="middle">2. 命中 → 校验 quote_id / case_id 一致</text>
+
+  <rect x="472" y="224" width="360" height="36" rx="6" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="652" y="247" font-size="11" fill="#334155" text-anchor="middle">3. 直接返回已有状态，不调外部</text>
+
+  <!-- Edge case row -->
+  <rect x="28" y="312" width="824" height="100" rx="10" fill="#F8FAFC" stroke="#CBD5E1"/>
+  <text x="48" y="340" font-size="12.5" font-weight="600" fill="#0F172A">并发撞键（两个请求同时到达）</text>
+  <text x="48" y="364" font-size="11" fill="#334155">应用层先查再写不是原子的：两个请求同时查到「没有」，同时尝试插入。</text>
+  <text x="48" y="384" font-size="11" fill="#EA580C">数据库唯一约束兜底：其中一个 INSERT 撞键失败，捕获后返回已有记录。这就是为什么幂等键必须有唯一索引。</text>
+
+  <rect x="28" y="432" width="824" height="36" rx="6" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="44" y="455" font-size="11.5" fill="#475569">幂等保护的不是「同一次确认会不会被扣两次钱」，而是「网络重试、用户双击、worker 重放」这些系统级重复</text>
+</svg>

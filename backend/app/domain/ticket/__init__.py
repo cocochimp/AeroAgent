@@ -1,0 +1,1 @@
+"""Ticket and booking domain."""
