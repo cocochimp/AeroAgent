@@ -1,0 +1,32 @@
+appId: com.aeroagent.desktop
+productName: AeroAgent
+asar: true
+npmRebuild: false
+directories:
+  output: release
+files:
+  - main.cjs
+  - preload.cjs
+  - package.json
+extraResources:
+  - from: build/backend/aeroagent-api
+    to: backend/aeroagent-api
+  - from: ../frontend/dist
+    to: frontend/dist
+  - from: ../demo_data
+    to: demo_data
+  - from: ../migrations
+    to: migrations
+  - from: ../eval
+    to: eval
+mac:
+  category: public.app-category.business
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage
