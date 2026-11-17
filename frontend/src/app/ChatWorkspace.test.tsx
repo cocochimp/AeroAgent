@@ -70,6 +70,50 @@ describe('learning workbench chat', () => {
 });
 
 
+it('stops at fulfillment.result_unknown and shows that the result needs verification', async () => {
+  let eventRequests = 0;
+  let caseReads = 0;
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url = String(input);
+    if (url.endsWith('/orders')) return json({ orders: [
+      { order_id: 'ORD1', user_id: 'u_zhang', passenger: '张三', flight_no: 'MU5101', date: '2026-11-20', airline: 'MU',
+        cabin: 'Y', fare_product: 'Y', fare: 500, tax: 50, status: 'ISSUED', flight: { origin_city: '杭州', dest_city: '北京',
+        dep_time: '09:00', status: 'scheduled', delay_min: 0 }, eligibility: { change: { allowed: true }, refund: { allowed: true } } },
+    ] });
+    if (url.endsWith('/cases') && init.method === 'POST') return json({ case_id: 'case-unknown' }, 202);
+    if (url.includes('/cases/case-unknown/events')) {
+      eventRequests += 1;
+      return new Response(
+        'id: 9-0\nevent: fulfillment.result_unknown\ndata: {"operation_id":"op-unknown","status":"TIMEOUT","message":"航司响应超时，办理结果待核对","retryable":true}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } });
+    }
+    if (url.endsWith('/cases/case-unknown')) {
+      caseReads += 1;
+      return json({ case_id: 'case-unknown', order_id: 'ORD1', status: 'RESULT_UNKNOWN',
+        result: { final: { text: '航司响应超时，办理结果待核对' }, trace: [], results: [], context: {}, memory: {}, verify: {} }, quotes: [] });
+    }
+    return json({});
+  }));
+
+  render(<App />);
+  await screen.findByText('MU5101');
+  fireEvent.change(screen.getByLabelText('描述退改需求'), { target: { value: '请办理退票' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+  expect(await screen.findByText('结果待核对 · 航司暂未返回明确办理结果，请核对订单状态')).toBeTruthy();
+  await waitFor(() => {
+    expect(caseReads).toBe(1);
+    expect(eventRequests).toBe(1);
+    expect((screen.getByLabelText('描述退改需求') as HTMLTextAreaElement).disabled).toBe(false);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  expect(caseReads).toBe(1);
+  expect(eventRequests).toBe(1);
+  expect(screen.queryByText(/主 Agent 正在编排/)).toBeNull();
+  expect(screen.queryByText(/事件连接失败/)).toBeNull();
+});
+
+
 it('routes the cancellation and human-handoff shortcuts through the case API', async () => {
   const calls: Array<{ url: string; method: string; body?: any }> = [];
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {

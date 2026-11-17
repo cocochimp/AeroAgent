@@ -24,13 +24,17 @@ export type CaseResult = {
 };
 export type CaseStreamEvent = { id: string; type: string; data: any };
 
-const tokenKey = 'air-ticket-demo-token';
+const tokenKey = 'aeroagent-demo-token';
+/** 生成演示乘客或管理员的 Bearer 令牌。 */
 export function tokenFor(userId: string, admin = false) {
   return `${admin ? 'demo-admin' : 'demo'}:${userId}`;
 }
+/** 将当前访问令牌保存到本地存储。 */
 export function setToken(token: string) { localStorage.setItem(tokenKey, token); }
+/** 读取访问令牌，未设置时使用默认演示乘客。 */
 export function getToken() { return localStorage.getItem(tokenKey) || tokenFor('u_zhang'); }
 
+/** 发送带鉴权的 JSON 请求，并统一处理 API 错误。 */
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API}${path}`, {
     ...init,
@@ -41,6 +45,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
+/** 解析单个 SSE 数据块，兼容 JSON 与纯文本载荷。 */
 export function parseSSEBlock(block: string): CaseStreamEvent | null {
   let id = '';
   let type = 'message';
@@ -55,8 +60,9 @@ export function parseSSEBlock(block: string): CaseStreamEvent | null {
   catch { return { id, type, data: { message: data.join('\n') } }; }
 }
 
+/** 持续消费 SSE 事件，支持游标续传、主动停止与断线重连。 */
 export async function streamEvents(path: string, onEvent: (type: string, data: any, id: string) => boolean | void | Promise<boolean | void>,
-                                   signal: AbortSignal, initialCursor = '') {
+                                   signal: AbortSignal, initialCursor = '', onError: (error: Error) => void = () => {}) {
   let cursor = initialCursor;
   while (!signal.aborted) {
     const url = new URL(`${API}${path}`, window.location.origin);
@@ -84,6 +90,7 @@ export async function streamEvents(path: string, onEvent: (type: string, data: a
     } catch (error) {
       if (signal.aborted) return;
       if (error instanceof Error && 'response' in error) throw error;
+      onError(error instanceof Error ? error : new Error('事件连接失败'));
     }
     await new Promise<void>((resolve) => {
       const timer = window.setTimeout(resolve, 500);
@@ -92,6 +99,7 @@ export async function streamEvents(path: string, onEvent: (type: string, data: a
   }
 }
 
+/** 生成带业务前缀的唯一请求标识。 */
 export function newRequestId(prefix: string) {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${prefix}-${random}`;

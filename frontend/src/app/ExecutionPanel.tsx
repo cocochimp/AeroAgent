@@ -1,3 +1,4 @@
+// 汇总流程、检索、记忆和校验观测视图。
 import { useRef, useState, type KeyboardEvent } from 'react';
 import type { CaseResult, TraceEvent } from '../api/client';
 import MemoryInspector from './MemoryInspector';

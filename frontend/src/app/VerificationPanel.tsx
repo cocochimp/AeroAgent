@@ -1,3 +1,4 @@
+// 展示置信度、金额核对、规则引用与校验错误。
 type Verify = Record<string, any> | undefined;
 type SubResult = { intent?: string; fee?: Record<string, unknown>; rules?: Array<{ id?: string }> ; error?: string };
 type FinalScheme = { options?: Array<{ type?: string; rule_refs?: string[] }> } | undefined;

@@ -1,3 +1,4 @@
+// 管理全局身份、订单数据与工作区路由。
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, setToken, tokenFor, type DemoUser, type Order } from '../api/client';
 import ChatWorkspace from './ChatWorkspace';

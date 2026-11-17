@@ -1,3 +1,4 @@
+// 展示评测指标、失败原因、运行对比与逐例结果。
 type Props = { run: any; compare?: any; onSelectCase?: (id: string) => void };
 const metricLabels: Record<string, string> = { n: '样本数', correctness: '业务正确率', tool_acc: '工具准确率', policy_hit: '票规命中率',
   human_rate: '转人工率', latency_avg_ms: '平均耗时 ms', latency_p95_ms: 'P95 耗时 ms', tokens_avg: '平均 Token' };

@@ -1,3 +1,4 @@
+// 提供导航、身份切换、主题和全局通知框架。
 import { useEffect, useState, type ReactNode } from 'react';
 import type { DemoUser } from '../api/client';
 
@@ -15,12 +16,12 @@ const pages: Array<{ id: WorkbenchPage; label: string; icon: string }> = [
 
 export default function WorkbenchShell(props: Props) {
   const [theme, setTheme] = useState<'dark' | 'light'>(() =>
-    localStorage.getItem('air-ticket-theme') === 'light' ? 'light' : 'dark');
-  useEffect(() => { localStorage.setItem('air-ticket-theme', theme); }, [theme]);
+    localStorage.getItem('aeroagent-theme') === 'light' ? 'light' : 'dark');
+  useEffect(() => { localStorage.setItem('aeroagent-theme', theme); }, [theme]);
   const user = props.users.find((item) => item.user_id === props.userId);
   return <div className={`workbench-shell theme-${theme}`}>
     <aside className="side-rail">
-      <div className="brand-mark" aria-label="云航工作台">✈</div>
+      <div className="brand-mark" aria-label="AeroAgent 工作台">✈</div>
       <nav aria-label="主导航" className="side-nav">
         {pages.map((item) => <button type="button" key={item.id}
           className={`side-nav-item ${props.page === item.id ? 'active' : ''}`}
@@ -33,7 +34,7 @@ export default function WorkbenchShell(props: Props) {
     </aside>
     <main className="workbench-main">
       <header className="workbench-topbar">
-        <div className="topbar-brand"><strong>退改签助手</strong><span className="demo-label">演示数据</span></div>
+        <div className="topbar-brand"><strong>AeroAgent</strong><span className="demo-label">演示数据</span></div>
         <div className="topbar-tools">
           <div className="mode-switch" aria-label="Agent 模式">
             <span className="mode-active">规则模式</span><button type="button" className="mode-disabled"
@@ -49,7 +50,7 @@ export default function WorkbenchShell(props: Props) {
             onClick={props.onRoleToggle} aria-label={props.isAdmin ? '管理员模式' : '乘客模式'}>
             {props.isAdmin ? '管理员模式' : '乘客模式'}
           </button>
-          <span className="avatar" title={user?.name}>{user?.name.slice(0, 1) ?? '学'}</span>
+          <span className="avatar" title={user?.name}>{user?.name.slice(0, 1) ?? 'A'}</span>
           <span className="retrieval-badge"><i />检索 hybrid</span>
           <button type="button" className="theme-toggle" aria-label="切换主题"
             onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? '☼' : '◐'}</button>

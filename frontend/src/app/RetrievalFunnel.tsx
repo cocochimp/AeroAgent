@@ -1,3 +1,4 @@
+// 展示各子诉求的检索阶段、候选规则与分数。
 import React from 'react';
 
 type FunnelStage = { stage?: string; label?: string; count?: number; k?: number | null; items?: Array<{ id?: string; title?: string; score?: number }> };

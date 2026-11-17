@@ -1,3 +1,4 @@
+// 按时间线展示 Agent 节点输入输出与耗时。
 import type { TraceEvent } from '../api/client';
 
 export default function TraceTimeline({ events }: { events: TraceEvent[] }) {

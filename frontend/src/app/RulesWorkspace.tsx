@@ -1,3 +1,4 @@
+// 检索、调试并维护票规及其启停状态。
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import RetrievalFunnel from './RetrievalFunnel';

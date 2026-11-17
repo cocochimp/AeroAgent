@@ -1,3 +1,4 @@
+// 展示上下文预算、分块截断和会话记忆。
 type Block = { tokens?: number; budget?: number; truncated?: boolean; text?: string };
 type ContextData = { total?: number; budget?: number; saved_pct?: number; blocks?: Record<string, Block> } | undefined;
 type MemoryData = Record<string, unknown> | undefined;

@@ -1,3 +1,4 @@
+// 承载退改对话、报价确认与案件事件跟踪。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, newRequestId, streamEvents, type CaseResult, type DemoUser, type Order, type Quote, type TraceEvent } from '../api/client';
 import ExecutionPanel from './ExecutionPanel';
@@ -17,7 +18,7 @@ const quickActions = [
 function money(amount?: number) { return typeof amount === 'number' ? `¥${amount.toLocaleString('zh-CN')}` : '—'; }
 function flightStatus(order: Order) { return order.flight?.status === 'cancelled' ? '已取消' : order.flight?.status === 'delayed' ? `延误 ${order.flight.delay_min} 分钟` : '正常'; }
 function terminal(type: string) { return ['case.proposed', 'case.failed', 'case.cancelled', 'quote.revised',
-  'fulfillment.completed', 'fulfillment.rejected'].includes(type); }
+  'fulfillment.completed', 'fulfillment.rejected', 'fulfillment.result_unknown'].includes(type); }
 
 export default function ChatWorkspace({ orders, userId, user, loading, isAdmin, onRefresh, onNotice }: Props) {
   const [selectedOrderId, setSelectedOrderId] = useState('');
@@ -64,6 +65,7 @@ export default function ChatWorkspace({ orders, userId, user, loading, isAdmin, 
         if (type === 'case.failed') onNotice(data.message || '本轮处理未完成');
         if (type === 'fulfillment.completed') onNotice('交易 Agent 已完成办理，结果已写入演示订单。');
         if (type === 'fulfillment.rejected') onNotice('办理复核未通过，案件已转人工处理。');
+        if (type === 'fulfillment.result_unknown') onNotice('航司暂未返回明确办理结果，结果待核对，请核对订单状态。');
         if (terminal(type)) {
           await loadCase(caseId, question);
           if (type === 'fulfillment.completed') await onRefresh();
@@ -71,7 +73,7 @@ export default function ChatWorkspace({ orders, userId, user, loading, isAdmin, 
           return true;
         }
         return false;
-      }, aborter.signal, initialCursor);
+      }, aborter.signal, initialCursor, (error) => onNotice(`事件连接失败：${error.message}`));
     } catch (error) { if (!aborter.signal.aborted) onNotice((error as Error).message); }
     finally { if (!aborter.signal.aborted) setBusy(false); }
   }
@@ -166,6 +168,7 @@ export default function ChatWorkspace({ orders, userId, user, loading, isAdmin, 
               <div><small>主 Agent · 规则模式</small><p>{assistantText}</p></div></div>}
             {activeCase.status === 'HUMAN_REVIEW' && <div className="handoff-banner">已转人工处理：系统未找到足够规则依据，不会自动办理。</div>}
             {activeCase.status === 'COMPLETED' && <div className="completed-banner">办理完成 · 演示客票和交易记录已更新</div>}
+            {activeCase.status === 'RESULT_UNKNOWN' && <div className="handoff-banner">结果待核对 · 航司暂未返回明确办理结果，请核对订单状态</div>}
           </div>}
           {busy && <div className="processing-row"><span className="spinner" />主 Agent 正在编排方案 Agent、规则检索与费用校验…</div>}
         </div>

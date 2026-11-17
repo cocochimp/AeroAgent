@@ -1,3 +1,4 @@
+// 查看、校验并保存服务端运行配置。
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 
@@ -5,7 +6,7 @@ function validateConfig(config: any) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('配置必须是 JSON 对象');
   if (config.memory?.token_budget !== undefined && (!Number.isInteger(config.memory.token_budget) || config.memory.token_budget < 200)) throw new Error('memory.token_budget 不能小于 200');
   for (const key of ['k_recall', 'k_fuse', 'k_rerank', 'k_mmr', 'k_inject']) if (config.retrieval?.[key] !== undefined && (!Number.isInteger(config.retrieval[key]) || config.retrieval[key] < 1)) throw new Error(`retrieval.${key} 必须是正整数`);
-  if (config.mode !== undefined && !['offline', 'deepseek'].includes(config.mode)) throw new Error('mode 只支持 offline 或 deepseek');
+  if (config.mode !== undefined && !['mock', 'offline', 'deepseek'].includes(config.mode)) throw new Error('mode 只支持 mock 或 deepseek');
   if (config.retrieval?.backend !== undefined && !['hybrid', 'fallback'].includes(config.retrieval.backend)) throw new Error('retrieval.backend 只支持 hybrid 或 fallback');
 }
 export default function ConfigWorkspace() {

@@ -1,3 +1,4 @@
+// 编辑评测集并管理评测运行、历史和对比。
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import EvaluationResults from './EvaluationResults';
