@@ -1,9 +1,0 @@
-flowchart TD
-  A[旅客一句话<br/>后天改签要补多少] --> B[Servicing 建案<br/>Ticket 校验订单归属与票联]
-  B --> C[Policy 匹配票规版本<br/>Loyalty 校验等级与权益]
-  C --> D[Pricing 计算改签费与差价<br/>Quote 生成报价快照]
-  D --> E{旅客确认}
-  E -- 取消 --> X[案件置为已取消]
-  E -- 确认 --> F[复核 1% 价格保护<br/>Fulfillment 幂等提交]
-  F -- 超过阈值 --> D
-  F -- 通过 --> G[Finance 写 Ledger 分账<br/>Servicing 案件终态]

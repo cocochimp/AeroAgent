@@ -1,68 +1,194 @@
-# 机票退改签 Agent 学习工作台
+# AeroAgent
 
-面向 Agent 学员的全链路实战项目：从识别退改诉求、检索票规、计算费用、生成报价，到乘客确认、交易复核和模拟办理。管理员可编辑评测集与规则、检查检索漏斗、管理演示数据和运行配置。
+AeroAgent 是面向机票退改签场景的垂直 Agent：以 LangGraph 编排三类 Agent，结合混合检索与可插拔的 mock/DeepSeek 决策，并提供零外部服务依赖的 lite 本地运行模式。
 
-> 所有航班、客票和旅客均为虚构演示数据；办理由 mock 航司适配器完成，不连接真实 GDS、支付或航司系统。
+所有航班、订单与办理结果均为虚构数据；系统不连接真实航司、GDS 或支付渠道。
+
+## 架构总览
+
+```mermaid
+flowchart TD
+    Desktop["Electron 桌面壳"] --> Web["React 工作台"]
+    Web -->|"REST / SSE"| API["FastAPI"]
+    API --> Queue["进程内队列"]
+    Queue --> Main["MainServiceAgent<br/>主服务 Agent"]
+    Main --> Advisor["ServicingAdvisorAgent<br/>方案 Agent"]
+    Advisor --> Tools["只读工具<br/>flight_status / rule_retrieve / recalc_fee"]
+    Tools --> Retrieval["本地混合检索<br/>BGE + BM25 + RRF + 精排"]
+    Advisor --> Quote["报价与人工确认"]
+    Quote -->|"乘客明确确认"| Transaction["TicketTransactionAgent<br/>交易 Agent"]
+    Transaction --> Airline["Airline Adapter<br/>默认 mock"]
+    Decision["DecisionEngine<br/>mock / DeepSeek 可插拔"] -.-> Main
+    Decision -.-> Advisor
+    Main --> DB[("SQLite<br/>var/aeroagent.db")]
+    Quote --> DB
+    Transaction --> DB
+    API -->|"事件与状态查询"| DB
+
+    subgraph Lite["lite 本地底座"]
+        Queue
+        Retrieval
+        DB
+    end
+```
+
+## 核心亮点
+
+- **三 Agent 职责隔离**：主服务 Agent 负责理解与编排，方案 Agent 仅使用只读工具生成方案，交易 Agent 只在确认后办理。
+- **可恢复编排与人工介入**：LangGraph 检查点支持追问、确认中断与恢复，关键节点保留 Trace。
+- **混合检索**：BGE 向量与 BM25 双路召回，经 RRF 融合、硬过滤、精排和 MMR 去冗余后注入上下文。
+- **可靠交易边界**：确认后重新核价，提供价格保护、确认 ID、幂等键与审计记录，避免重复办理。
+- **零 key 同通道运行**：mock 与 DeepSeek 实现同一决策接口，默认无需密钥即可跑通完整退改链路。
+- **lite 本地运行**：SQLite、进程内队列和本地向量检索随单进程启动，无需额外中间件。
+
+## 技术栈
+
+| 层次 | 技术 | 用途 |
+|---|---|---|
+| 后端 | Python 3.13、FastAPI、Uvicorn | REST、SSE、应用生命周期与本地服务 |
+| Agent | LangGraph、SQLite Checkpoint | 状态编排、中断恢复与人工确认 |
+| 决策 | DecisionEngine、mock、DeepSeek | 可插拔的意图与工具决策 |
+| 检索 | fastembed BGE、BM25、RRF、FlashRank | 本地向量召回、融合、精排与规则注入 |
+| 数据 | SQLite、SQLAlchemy、Alembic | 业务持久化、检查点与 schema 迁移 |
+| 前端 | React 18、TypeScript、Vite、Vitest | Agent 开发工作台与交互测试 |
+| 桌面 | Electron、PyInstaller、electron-builder | 本地桌面壳、后端打包与安装包构建 |
+| 交付 | uv、npm、Docker Compose、GitHub Actions | 依赖管理、全栈启动与持续验证 |
+
+## 目录结构
+
+| 路径 | 说明 |
+|---|---|
+| `app/` | 唯一后端，包含 API、应用服务、三 Agent、领域逻辑与适配器 |
+| `frontend/` | React + Vite 工作台及前端测试 |
+| `desktop/` | Electron 主进程、开发联动与生产打包脚本 |
+| `migrations/` | Alembic 数据库版本迁移 |
+| `demo_data/` | 虚构航班、订单、规则与评测种子数据 |
+| `eval/` | 评测数据与离线评测资产 |
+| `tests/` | 后端单元、集成与 lite 运行测试 |
+| `infra/` | Docker Compose 全栈编排 |
+| `docs/` | API 说明与运行运维手册 |
+| `scripts/` | 零 key 冒烟、演示与代码质量门禁脚本 |
 
 ## 快速启动
 
-需要 Docker Desktop、Node.js 和 npm：
+先决条件：[uv](https://docs.astral.sh/uv/)、Node.js 24+ 与 npm。后端依赖由 uv 按 `pyproject.toml` 和 `uv.lock` 安装。
+
+### lite 本地运行
+
+启动后端：
 
 ```bash
-cp .env.example .env   # 首次启动；本地保留 DEMO_AUTH=true
+uv sync
+uv run uvicorn app.api.main:app --port 8000
+```
+
+另开终端启动前端：
+
+```bash
+npm --prefix frontend ci && npm --prefix frontend run dev
+```
+
+访问 <http://localhost:5173>，Vite 将 `/api` 代理到 `http://127.0.0.1:8000`。FastAPI lifespan 会初始化 SQLite、种子数据、本地检索投影和内嵌 worker。
+
+### Docker 全栈
+
+安装 Docker Desktop 后执行：
+
+```bash
 ./start.sh
 ```
 
-访问 <http://localhost:8080>。Compose 启动 React、FastAPI、worker、PostgreSQL、Redis 和 Qdrant。完整环境是默认学习入口；仅启动前端不会提供案件、订单、评测等服务端能力。
+访问 <http://localhost:8080>。Compose 构建并启动前端与 lite 后端，业务数据挂载在 `var/`。
 
-前端热更新：先运行上述服务，再执行：
+## 默认 mock 与真实 DeepSeek
+
+默认 `mode=mock`，不需要 API Key。复制 `config.example.json` 为项目根目录的 `config.json`，再设置 `mode=deepseek` 与 `llm.api_key` 即可切换真实模型：
+
+```json
+{
+  "mode": "deepseek",
+  "llm": {
+    "base_url": "https://api.deepseek.com",
+    "api_key": "sk-...",
+    "model": "deepseek-chat",
+    "timeout": 30
+  }
+}
+```
+
+这些配置只影响 LLM 决策；规则检索与费用计算仍由本地确定性链路完成。航司办理始终通过适配器执行，默认使用 mock，不会因启用 DeepSeek 而连接真实航司。也可在管理员“配置”工作区修改运行参数，密钥读取时仅返回掩码。
+
+## 一次改签的调用链
+
+1. React 调用 `POST /api/v1/cases`，FastAPI 完成鉴权、创建案件并投递进程内任务。
+2. FastAPI lifespan 内嵌 worker 消费任务，进入案件应用服务。
+3. `MainServiceAgent` 对齐订单、加载记忆并理解改签诉求；信息不足时由 LangGraph 中断并等待补充。
+4. `ServicingAdvisorAgent` 依次查询航班状态、检索适用票规，再调用确定性费用引擎计算手续费与差价。
+5. 后端保存报价和 Trace，通过 SSE 推送方案；案件等待乘客确认，此阶段订单不变。
+6. 乘客确认报价后，应用服务复核价格保护区间，并以确认 ID 和幂等键创建交易操作。
+7. `TicketTransactionAgent` 调用 Airline mock 适配器办理，写入订单结果、账本与审计。
+8. SSE 推送完成事件，工作台展示办理结果；异常或结果未知时保留现场供核查。
+
+推荐阅读顺序：`app/api/main.py` → `app/application/cases/service.py` → `app/application/agents/orchestrator.py` → `main_agent.py`、`solution_agent.py`、`transaction_agent.py` → `app/application/fulfillment.py`。
+
+## 桌面版
+
+先安装前端依赖，再启动 Electron 开发环境：
 
 ```bash
-cd frontend
-npm ci
-npm run dev
+npm --prefix frontend ci
+npm --prefix desktop install && npm --prefix desktop run dev
 ```
 
-访问 <http://localhost:5173>。Vite 会将 `/api` 代理到 `http://127.0.0.1:8000`。后端可用 `uv run uvicorn backend.app.api.main:app --reload --port 8000` 单独启动，但仍需配置 PostgreSQL、Redis 和 Qdrant；具体说明见 [`docs/runbook.md`](docs/runbook.md)。
+开发脚本会同时启动 Vite、Electron 和动态端口上的本地 FastAPI；退出时清理子进程树。
 
-## 学员工作台
+生产打包会先构建前端，再用 PyInstaller onedir 打包后端，最后调用 electron-builder：
 
-- **乘客对话**：订单可退改资格、改签差价、改签加退票、航班取消、指代追问、模糊日期、转人工；确认报价后才执行办理。
-- **流程观测**：可折叠 Agent Trace、逐子诉求检索漏斗、候选规则分数、上下文 Token 分块、金额与依据校验。
-- **评测管理**：编辑/导入/导出评测集，按范围发起真实 Agent 运行，观察进度、业务正确率、工具准确率、票规命中率、延迟、Token、失败原因和逐例 Trace，比较历史运行。
-- **规则维护**：按航司、舱位、票种、场景和文本检索；检查 dense、BM25、RRF、过滤、精排、MMR、注入各阶段；编辑、停用和重新启用规则。
-- **数据与配置**：管理演示客票、航班状态和会员画像；查看及更新运行参数，配置 API Key 仅返回掩码。
-
-指标读取实际服务端运行结果。没有值时显示“本轮无数据”，不会用截图数值补齐。
-
-### 旧工作台功能核对
-
-| 区域 | 保留的操作 |
-|---|---|
-| 顶栏 | 规则/DeepSeek 模式状态、用户身份、检索状态、深浅主题 |
-| 对话 | 改签差价、改签+退票、航班取消、指代追问、模糊日期、转人工；报价确认与办理结果 |
-| 流程/检索/记忆/校验 | 节点 Trace 输入输出与耗时；逐子诉求检索阶段和候选分数；Token 分块与截断；置信度、金额、引用依据和错误 |
-| 评测 | 评测用例搜索、编辑、导入/导出、保存、范围运行、实时进度、失败下钻、Trace、历史和双运行对比 |
-| 规则 | 航司/舱位/票种/场景/文本过滤，实际检索漏斗，新增/编辑/停用/启用 |
-| 数据 | 订单和画像查询、航班正常/延误/取消、画像清理、演示数据重置 |
-| 配置 | 运行配置读取/保存/校验、API Key 掩码、可选 LLM 连通性检查 |
-
-## 业务与架构
-
-```text
-乘客诉求 → 主 Agent 编排 → 方案 Agent 查询票规与费用 → 展示报价
-        → 乘客明确确认 → 交易 Agent 复核 → 幂等提交 mock 航司 → 更新订单并记录审计
+```bash
+npm --prefix desktop run dist
 ```
 
-- **DDD 六边形架构**：业务规则与 FastAPI、LangGraph、数据库和队列分离。
-- **四梯度会员模型**：普通、银卡、金卡、黑钻用户用于演示会员策略输入；当前价格计算按演示票规，不虚构会员减免。
-- **确认后 1% 价格保护**：报价过期仍复核；降价或涨幅不超过 1% 仍按已确认金额办理，平台承担小幅差额；涨幅超过 1% 重新报价并再次确认。退款金额降低时重新确认。
-- **可靠办理**：PostgreSQL 保存案件、报价、操作、账本和审计；Outbox/Redis Streams 承接后台工作；确认 ID 和幂等键防止重复办理。
+安装包输出到 `desktop/release/`。
 
-## 技术栈与文档
+## API 概览
 
-Python 3.13、FastAPI、LangGraph、React 18、Vite、TypeScript、PostgreSQL、SQLAlchemy async、Redis Streams、Qdrant、OpenTelemetry、Docker Compose。版本化 API 共 **15 个 method/path**，见 [`docs/api-v1.md`](docs/api-v1.md)。
+版本化 API 共 15 个 method/path，完整路径、查询参数与权限见 [`docs/api-v1.md`](docs/api-v1.md)。
 
-后端入口为 `backend.app.api.main`，DDD 代码位于 `backend/app/domain`、`application`、`adapters`、`api`。`air_agent/` 保留现有 Agent/检索实现，供 DDD 适配器调用；根目录 `app.py` 与 `web/` 是旧入口，继续保留作兼容回退，不是新工作台的页面数据源。
+| 分组 | 数量 | 能力 |
+|---|---:|---|
+| `cases` | 4 | 创建案件、读取状态、补充消息、订阅 SSE 事件 |
+| `quotes` | 1 | 确认报价并提交交易 |
+| `orders` | 2 | 查询客票，以及管理航班状态和演示数据 |
+| `admin` | 7 | 规则维护、检索调试、评测集与运行、系统配置 |
+| `health` | 1 | 应用与本地依赖健康检查 |
 
-共享环境不能使用本地演示令牌；关闭 `DEMO_AUTH` 并配置真实身份源、密钥管理和受控配置存储。部署边界见 [`docs/runbook.md`](docs/runbook.md)。
+## 验证
+
+```bash
+uv run pytest -q
+uv run python scripts/check_docstrings.py
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+零 key 端到端冒烟覆盖改签、退票、报价确认、幂等提交与 SSE 事件。先在终端一启动服务，再在终端二执行脚本：
+
+```bash
+# 终端一
+uv run uvicorn app.api.main:app --port 8123
+
+# 终端二
+uv run python scripts/smoke_lite.py
+```
+
+## 运维与边界
+
+运行配置、数据位置、桌面日志和常见故障见 [`docs/runbook.md`](docs/runbook.md)。
+
+lite 面向本地与单实例演示：仅支持单进程、单写者；进程内队列不持久，重启会丢失未执行项；本地向量检索采用线性扫描，不适合大规模规则库或多实例部署。演示令牌与 mock 航司不得作为生产身份源或真实履约通道。
+
+## 贡献与许可证
+
+欢迎提交 Issue 和 Pull Request。提交前请完成后端、前端与冒烟验证，commit message 使用英文并保持改动聚焦。
+
+项目采用 [MIT License](LICENSE)。
