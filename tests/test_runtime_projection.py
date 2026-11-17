@@ -3,9 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from air_agent import data, settings
-from backend.app.adapters.outbound.legacy.runtime_projection import sync_agent_projection
-from backend.app.adapters.outbound.postgres.models import FeeRuleRecord, FlightRecord, OrderRecord, ProfileRecord, RuleRecord
+from app.adapters.outbound.sqlite import data
+from app import config as settings
+from app.adapters.outbound.sqlite.runtime_projection import sync_agent_projection
+from app.adapters.outbound.postgres.models import FeeRuleRecord, FlightRecord, OrderRecord, ProfileRecord, RuleRecord
 
 
 class FakeSession:
@@ -92,8 +93,8 @@ class FakeQuerySession(FakeSession):
 
 
 def test_order_api_scopes_passengers_and_exposes_admin_inventory(monkeypatch):
-    from backend.app.adapters.inbound.http import orders as api
-    from backend.app.adapters.inbound.http.auth import Principal
+    from app.adapters.inbound.http import orders as api
+    from app.adapters.inbound.http.auth import Principal
 
     flight = SimpleNamespace(flight_no="MU5101", date="2026-09-28", origin="HGH", dest="PEK",
         origin_city="杭州", dest_city="北京", dep_time="10:00", status="scheduled", delay_min=0)
@@ -122,8 +123,8 @@ def test_order_api_scopes_passengers_and_exposes_admin_inventory(monkeypatch):
 
 
 def test_admin_can_change_flight_status_and_projection_refreshes(monkeypatch):
-    from backend.app.adapters.inbound.http import orders as api
-    from backend.app.adapters.inbound.http.auth import Principal
+    from app.adapters.inbound.http import orders as api
+    from app.adapters.inbound.http.auth import Principal
 
     flight = SimpleNamespace(flight_no="MU5101", date="2026-09-28", status="scheduled", delay_min=0)
     rows = {FlightRecord: [flight]}
@@ -146,9 +147,9 @@ def test_admin_can_change_flight_status_and_projection_refreshes(monkeypatch):
 def test_start_evaluation_binds_selected_cases_to_persisted_version(monkeypatch):
     import asyncio
     from datetime import datetime, timezone
-    from backend.app.adapters.inbound.http import admin
-    from backend.app.adapters.inbound.http.auth import Principal
-    from backend.app.adapters.outbound.postgres.models import EvaluationCaseSetRecord, EvaluationRunRecord
+    from app.adapters.inbound.http import admin
+    from app.adapters.inbound.http.auth import Principal
+    from app.adapters.outbound.postgres.models import EvaluationCaseSetRecord, EvaluationRunRecord
     cases = [{"id": "a", "question": "退票", "expect": {"outcome": "ANSWER"}},
              {"id": "b", "question": "改签", "expect": {"outcome": "ANSWER"}}]
     case_set = SimpleNamespace(version="v2", cases=cases, created_at=datetime.now(timezone.utc))

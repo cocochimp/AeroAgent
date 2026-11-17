@@ -1,4 +1,5 @@
-from air_agent import data, retrieval
+from app.adapters.outbound.sqlite import data
+from app.adapters.outbound import retrieval
 
 STAGES = ["dense", "sparse", "rrf", "filter", "rerank", "mmr", "inject"]
 
@@ -69,7 +70,7 @@ import time
 import types
 
 import pytest
-from air_agent import settings as S
+from app import config as S
 
 OFF_TOPIC = ["宠物能带上飞机吗", "航班上有wifi吗", "申请发票怎么开", "儿童票怎么买", "行李超重怎么办",
              "飞机餐好吃吗", "明天天气怎么样", "会员积分怎么兑换里程"]

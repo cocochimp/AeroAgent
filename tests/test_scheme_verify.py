@@ -1,4 +1,7 @@
-from air_agent import data, engine, retrieval, scheme, verify
+from app.adapters.outbound.sqlite import data
+from app.adapters.outbound import retrieval
+from app.application import fee_engine as engine
+from app.application.agents import proposal as scheme, verification as verify
 
 D = "20260926"
 
@@ -180,9 +183,9 @@ def test_rule_amount_exemption_does_not_hide_invented_amounts():
 # ---------------------------------------------------------------- 加固：金额逐项/逐标签校验
 import pytest
 from datetime import date, timedelta
-from air_agent import seed
-from air_agent import settings as S
-from air_agent.engine import EngineError
+from app.application import seed
+from app import config as S
+from app.application.fee_engine import EngineError
 
 
 def _edit(s, idx, old, new, split):

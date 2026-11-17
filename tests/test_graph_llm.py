@@ -1,5 +1,6 @@
 import pytest
-from air_agent import data, graph, llm
+from app.adapters.outbound.sqlite import data
+from app.application.agents import llm, orchestrator as graph
 
 D = "20260926"
 O1 = f"ORD{D}001"

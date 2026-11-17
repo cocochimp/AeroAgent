@@ -1,7 +1,8 @@
 from datetime import date, timedelta
 import pytest
-from air_agent import data, engine, seed
-from air_agent import settings as S
+from app.adapters.outbound.sqlite import data
+from app.application import fee_engine as engine, seed
+from app import config as S
 
 
 def _order(pred):

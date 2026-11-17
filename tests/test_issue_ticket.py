@@ -1,86 +1,116 @@
-import hashlib
-import threading
-from air_agent import data, engine, tools
+import asyncio
+from datetime import datetime, timezone
 
-D = "20260926"
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-
-def test_change_ticket_updates_order_and_is_idempotent():
-    data.init()
-    before = data.get_order(f"ORD{D}001")
-    fee = engine.calc(before["order_id"], "CHANGE", target_date="2026-09-29")
-    args = {"order_id": before["order_id"], "action": "CHANGE", "confirm_id": "confirm-001",
-            "target_date": "2026-09-29"}
-    first = tools.issue_ticket(args)
-    second = tools.issue_ticket(args)
-    after = data.get_order(before["order_id"])
-    assert first["ticket_no"] == second["ticket_no"] and second["idempotent"] is True
-    assert after["date"] == "2026-09-29" and after["ticket_no"] == first["ticket_no"]
-    assert first["amount"] == fee["total"]
+from app.adapters.outbound.airline.mock import MockAirlineGateway
+from app.adapters.outbound.postgres.models import (
+    Base, LedgerRecord, OperationRecord, OrderRecord, QuoteRecord, ServiceCaseRecord,
+)
+from app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.sqlite import data as agent_data
+from app.application import fulfillment
+from app.application.agents.transaction_agent import ConfirmedQuoteCommand, TicketTransactionAgent
+from app.application.cases import service as quote_service
+from app.application.pricing import calculate
 
 
-def test_refund_ticket():
-    data.init()
-    o = data.get_order(f"ORD{D}003")
-    r = tools.issue_ticket({"order_id": o["order_id"], "action": "REFUND", "confirm_id": "confirm-002"})
-    assert r["status"] == "REFUNDED" and data.get_order(o["order_id"])["status"] == "REFUNDED"
+async def _offered_quote(factory, key):
+    async with factory() as session:
+        await seed_demo_data(session, force=True)
+        order = await session.scalar(select(OrderRecord).where(
+            OrderRecord.status == "ISSUED", OrderRecord.fare_product == "Y_DISCOUNT").limit(1))
+        pricing = await calculate(session, order.order_id, "REFUND")
+        now = datetime.now(timezone.utc)
+        case = ServiceCaseRecord(case_id=f"case-{key}", user_id=order.user_id, order_id=order.order_id,
+                                 status="WAITING_CONFIRMATION", intent="REFUND", session_id=f"session-{key}",
+                                 created_at=now, updated_at=now, current_quote_id=f"quote-{key}", result={})
+        quote = QuoteRecord(quote_id=f"quote-{key}", case_id=case.case_id, order_id=order.order_id,
+                            action="REFUND", amount=pricing["refund_amount"], currency="CNY",
+                            details=[{"pricing": pricing}], policy_version="v1", benefit_version="v1",
+                            status="OFFERED", expires_at=now, created_at=now)
+        session.add_all([case, quote])
+        await session.commit()
+        return quote.quote_id, order.order_id, order.user_id
 
 
-def test_not_allowed_is_rejected():
-    data.init()
-    gp = next(o for o in data.list_orders() if o["fare_product"] == "GROUP")
-    r = tools.issue_ticket({"order_id": gp["order_id"], "action": "REFUND", "confirm_id": "confirm-003"})
-    assert r["status"] == "REJECTED"
+def _patch_business_db(monkeypatch, factory):
+    monkeypatch.setattr(fulfillment, "SessionFactory", factory)
+    monkeypatch.setattr(quote_service, "SessionFactory", factory)
+
+    async def no_event(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(fulfillment, "record_case_event", no_event)
+    monkeypatch.setattr(quote_service, "record_case_event", no_event)
 
 
-def test_ticket_no_is_deterministic():
-    data.init()
-    args = {"order_id": f"ORD{D}001", "action": "CHANGE", "confirm_id": "confirm-004", "target_date": "2026-09-29"}
-    r = tools.issue_ticket(args)
-    h = hashlib.sha1(f"confirm-004:{r['target']['flight_no']}".encode()).hexdigest()
-    assert r["ticket_no"] == f"781-{int(h, 16) % 10**10:010d}"
+def test_quote_api_and_transaction_agent_fulfill_with_idempotency(tmp_path, monkeypatch):
+    async def run():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'transaction.db'}")
+        factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        _patch_business_db(monkeypatch, factory)
+        quote_id, order_id, user_id = await _offered_quote(factory, "transaction-success")
+        agent_data.init()
+        legacy_order = agent_data.list_orders()[0]
+        legacy_before = agent_data.get_order(legacy_order["order_id"])
+
+        confirmed = await quote_service.create_confirmed_operation(
+            quote_id, user_id, "confirmation-transaction-success", "transaction-success")
+        gateway = MockAirlineGateway(delay_seconds=0, session_factory=factory)
+        agent = TicketTransactionAgent(airline=gateway)
+        first = await agent.execute(ConfirmedQuoteCommand(confirmed["operation_id"]))
+        replay = await agent.execute(ConfirmedQuoteCommand(confirmed["operation_id"]))
+
+        assert confirmed["status"] == "ACCEPTED"
+        assert first["status"] == "REFUNDED" and first["ticket_no"].startswith("781-")
+        assert replay["idempotent"] is True and replay["operation_id"] == confirmed["operation_id"]
+        async with factory() as session:
+            assert (await session.get(OrderRecord, order_id)).status == "REFUNDED"
+            assert (await session.get(QuoteRecord, quote_id)).status == "EXECUTED"
+            assert await session.scalar(select(func.count()).select_from(OperationRecord)) == 1
+            assert await session.scalar(select(func.count()).select_from(LedgerRecord)) == 2
+        assert agent_data.get_order(legacy_order["order_id"]) == legacy_before
+        await engine.dispose()
+
+    asyncio.run(run())
 
 
-def test_concurrent_same_confirm_issues_once(monkeypatch):
-    data.init()
-    calls = []
-    orig = data.update_order
-    monkeypatch.setattr(data, "update_order", lambda *a, **k: (calls.append(1), orig(*a, **k))[1])
-    args = {"order_id": f"ORD{D}001", "action": "CHANGE", "confirm_id": "confirm-race", "target_date": "2026-09-29"}
-    out, barrier = [], threading.Barrier(2)
+def test_transaction_agent_rejection_does_not_mutate_business_or_agent_orders(tmp_path, monkeypatch):
+    async def run():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'transaction-rejected.db'}")
+        factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        _patch_business_db(monkeypatch, factory)
+        quote_id, order_id, user_id = await _offered_quote(factory, "transaction-rejected")
+        agent_data.init()
+        legacy_order = agent_data.list_orders()[0]
+        legacy_before = agent_data.get_order(legacy_order["order_id"])
+        confirmed = await quote_service.create_confirmed_operation(
+            quote_id, user_id, "confirmation-transaction-rejected", "transaction-rejected")
+        gateway = MockAirlineGateway(delay_seconds=0, session_factory=factory,
+                                     outcomes={"transaction-rejected": "REJECTED"})
 
-    def run():
-        barrier.wait()
-        out.append(tools.issue_ticket(args))
+        result = await TicketTransactionAgent(airline=gateway).execute(
+            ConfirmedQuoteCommand(confirmed["operation_id"]))
 
-    ths = [threading.Thread(target=run) for _ in range(2)]
-    [t.start() for t in ths]
-    [t.join() for t in ths]
-    assert len(out) == 2 and sorted(r["idempotent"] for r in out) == [False, True]
-    assert out[0]["ticket_no"] == out[1]["ticket_no"]
-    assert len(calls) == 1
-    with data.connect() as c:
-        assert c.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 1
+        assert result["status"] == "FAILED"
+        async with factory() as session:
+            assert (await session.get(OrderRecord, order_id)).status == "ISSUED"
+            assert (await session.get(QuoteRecord, quote_id)).status == "CONFIRMED"
+            assert (await session.get(OperationRecord, confirmed["operation_id"])).status == "FAILED"
+            assert await session.scalar(select(func.count()).select_from(LedgerRecord)) == 0
+        assert agent_data.get_order(legacy_order["order_id"]) == legacy_before
+        await engine.dispose()
 
-
-def test_unexpected_exception_is_rejected(monkeypatch):
-    data.init()
-    monkeypatch.setattr(engine, "calc", lambda *a, **k: 1 / 0)
-    r = tools.issue_ticket({"order_id": f"ORD{D}001", "action": "REFUND", "confirm_id": "confirm-boom"})
-    assert r["status"] == "REJECTED" and r["reason"]
-    with data.connect() as c:
-        assert c.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 0
-
-
-def test_engine_error_is_rejected():
-    data.init()
-    r = tools.issue_ticket({"order_id": "ORD20260926999", "action": "REFUND", "confirm_id": "confirm-none"})
-    assert r["status"] == "REJECTED"
+    asyncio.run(run())
 
 
-def test_confirm_id_reuse_on_other_order_rejected():
-    data.init()
-    tools.issue_ticket({"order_id": f"ORD{D}003", "action": "REFUND", "confirm_id": "confirm-reuse"})
-    r = tools.issue_ticket({"order_id": f"ORD{D}001", "action": "REFUND", "confirm_id": "confirm-reuse"})
-    assert r["status"] == "REJECTED"
-    assert data.get_order(f"ORD{D}001")["status"] == "ISSUED"
+def test_transaction_agent_requires_persisted_operation_id():
+    with pytest.raises(ValueError, match="operation_id"):
+        asyncio.run(TicketTransactionAgent().execute(ConfirmedQuoteCommand("")))

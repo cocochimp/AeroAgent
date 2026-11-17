@@ -1,4 +1,5 @@
-from air_agent import data, seed
+from app.adapters.outbound.sqlite import data
+from app.application import seed
 
 
 def test_init_seeds_everything():
@@ -45,7 +46,7 @@ def test_rule_text_matches_fee_table():
 # ---- 评审修复补充 ----
 import pytest
 from datetime import datetime
-from air_agent import settings as S
+from app import config as S
 
 
 def test_update_order_rejects_bad_fields():

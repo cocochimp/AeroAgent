@@ -3,7 +3,7 @@ os.environ.setdefault("AIR_RETRIEVAL", "fallback")
 
 from datetime import datetime
 import pytest
-from air_agent import settings as S
+from app import config as S
 
 FIXED_NOW = datetime(2026, 9, 26, 10, 0)
 

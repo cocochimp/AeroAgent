@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from air_agent.demo_data import load_demo_seed
+from app.demo_data import load_demo_seed
 
 
 def test_demo_seed_has_current_business_scenarios_and_stable_counts():

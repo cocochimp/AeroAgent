@@ -1,9 +1,9 @@
 import asyncio
 from types import SimpleNamespace
 
-from backend.app.adapters.inbound.http import admin
-from backend.app.adapters.inbound.http.auth import Principal
-from backend.app.adapters.outbound.postgres.models import RuleRecord
+from app.adapters.inbound.http import admin
+from app.adapters.inbound.http.auth import Principal
+from app.adapters.outbound.postgres.models import RuleRecord
 
 
 class RuleSession:

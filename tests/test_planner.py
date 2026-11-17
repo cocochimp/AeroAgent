@@ -1,7 +1,8 @@
 import httpx
 import pytest
-from air_agent import data, llm, planner, query
-from air_agent import settings as S
+from app.adapters.outbound.sqlite import data
+from app.application.agents import llm, planning as planner, understanding as query
+from app import config as S
 
 D = "20260926"
 
@@ -89,7 +90,7 @@ def test_get_client_requires_key():
     S.update({"mode": "deepseek"})
     with pytest.raises(llm.LLMNotConfigured):
         llm.get_client("deepseek")
-    assert llm.get_client("offline") is None
+    assert llm.get_client("mock").mode == "mock"
 
 
 def test_malformed_payload_raises_llm_error():

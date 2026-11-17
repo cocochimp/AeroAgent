@@ -1,1 +1,0 @@
-"""Ticket servicing use cases."""

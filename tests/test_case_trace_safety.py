@@ -1,4 +1,6 @@
-from backend.app.application.cases.service import sanitize_trace_event
+import pytest
+
+from app.application.cases.service import sanitize_trace_event
 
 
 def test_trace_event_unwraps_agent_event_and_redacts_business_text_and_secrets():
@@ -17,7 +19,7 @@ def test_trace_event_unwraps_agent_event_and_redacts_business_text_and_secrets()
 
 
 def test_cancel_request_requires_unambiguous_explicit_phrase():
-    from backend.app.adapters.inbound.http.cases import is_cancel_request
+    from app.adapters.inbound.http.cases import is_cancel_request
     assert is_cancel_request("取消")
     assert is_cancel_request("暂不办理")
     assert not is_cancel_request("我想咨询改签后能否取消")
@@ -25,7 +27,7 @@ def test_cancel_request_requires_unambiguous_explicit_phrase():
 
 def test_agent_trace_callback_persists_safe_case_trace_event(monkeypatch):
     import asyncio
-    import backend.app.application.cases.service as service
+    import app.application.cases.service as service
     recorded = []
     async def record(case_id, event_type, payload):
         recorded.append((case_id, event_type, payload))
@@ -43,8 +45,8 @@ def test_agent_trace_callback_persists_safe_case_trace_event(monkeypatch):
 def test_quote_can_be_cancelled_through_existing_case_message_command(monkeypatch):
     import asyncio
     from types import SimpleNamespace
-    import backend.app.adapters.inbound.http.cases as api
-    from backend.app.adapters.inbound.http.auth import Principal
+    import app.adapters.inbound.http.cases as api
+    from app.adapters.inbound.http.auth import Principal
     case = SimpleNamespace(case_id="case-1", user_id="u1", session_id="s1", order_id="O1", current_quote_id="q1")
     quote = SimpleNamespace(status="OFFERED")
     current_case = SimpleNamespace(status="WAITING_CONFIRMATION", updated_at=None)
@@ -72,9 +74,9 @@ def test_quote_can_be_cancelled_through_existing_case_message_command(monkeypatc
 def test_event_reconnect_delivers_after_cursor_once(monkeypatch):
     import asyncio
     from types import SimpleNamespace
-    import backend.app.adapters.inbound.http.cases as api
-    from backend.app.adapters.inbound.http.auth import Principal
-    from backend.app.adapters.outbound.postgres.models import CaseEventRecord
+    import app.adapters.inbound.http.cases as api
+    from app.adapters.inbound.http.auth import Principal
+    from app.adapters.outbound.postgres.models import CaseEventRecord
     case = SimpleNamespace(case_id="case-1", user_id="u1", status="COMPLETED")
     rows = [SimpleNamespace(id=2, case_id="case-1", event_type="case.trace", stream_id="2-0",
                             payload={"node": "a"}),
@@ -118,7 +120,7 @@ def test_event_reconnect_delivers_after_cursor_once(monkeypatch):
 def test_failed_agent_turn_records_explainable_event_and_terminal_status(monkeypatch):
     import asyncio
     from types import SimpleNamespace
-    import backend.app.application.cases.service as service
+    import app.application.cases.service as service
     case = SimpleNamespace(status="OPEN", updated_at=None, result={})
     class Session:
         async def __aenter__(self): return self
@@ -150,14 +152,16 @@ def test_failed_agent_turn_records_explainable_event_and_terminal_status(monkeyp
 def test_replayed_confirmation_is_idempotent_and_emits_trace_event(monkeypatch):
     import asyncio
     from types import SimpleNamespace
-    import backend.app.application.cases.service as service
-    from backend.app.adapters.outbound.postgres.models import QuoteRecord
+    import app.application.cases.service as service
+    from app.adapters.outbound.postgres.models import QuoteRecord
     quote = SimpleNamespace(quote_id="q1", case_id="case-1", status="CONFIRMED", confirmation_id="confirm-1", amount=300)
     case = SimpleNamespace(case_id="case-1", user_id="u1")
+    operation = SimpleNamespace(status="PENDING", operation_id="op-1")
     class Session:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return None
         async def get(self, model, key, **kwargs): return quote if model is QuoteRecord else case
+        async def scalar(self, statement): return operation
     events = []
     async def record(*args): events.append(args)
     monkeypatch.setattr(service, "SessionFactory", Session)
@@ -166,5 +170,33 @@ def test_replayed_confirmation_is_idempotent_and_emits_trace_event(monkeypatch):
     async def call():
         return await service.create_confirmed_operation("q1", "u1", "confirm-1", "idempotency-1")
     result = asyncio.run(call())
-    assert result == {"status": "CONFIRMED", "quote_id": "q1", "amount": 300, "idempotent": True}
+    assert result == {"status": "PENDING", "operation_id": "op-1", "quote_id": "q1",
+                      "amount": 300, "idempotent": True}
     assert events == [("case-1", "quote.confirmation_replayed", {"quote_id": "q1", "confirmation_id": "confirm-1"})]
+
+
+def test_replayed_confirmed_quote_without_operation_raises_explicit_error(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    import app.application.cases.service as service
+    from app.adapters.outbound.postgres.models import QuoteRecord
+    quote = SimpleNamespace(quote_id="q1", case_id="case-1", status="CONFIRMED",
+                            confirmation_id="confirm-1", amount=300)
+    case = SimpleNamespace(case_id="case-1", user_id="u1")
+    events = []
+
+    class Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return None
+        async def get(self, model, key, **kwargs): return quote if model is QuoteRecord else case
+        async def scalar(self, statement): return None
+
+    async def record(*args): events.append(args)
+    monkeypatch.setattr(service, "SessionFactory", Session)
+    monkeypatch.setattr(service, "record_case_event", record)
+
+    async def call():
+        await service.create_confirmed_operation("q1", "u1", "confirm-1", "idempotency-1")
+
+    with pytest.raises(LookupError, match="已确认报价缺少办理记录"):
+        asyncio.run(call())

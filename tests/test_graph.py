@@ -1,5 +1,7 @@
 import pytest
-from air_agent import data, engine, graph
+from app.adapters.outbound.sqlite import data
+from app.application import fee_engine as engine
+from app.application.agents import orchestrator as graph
 
 D = "20260926"
 O1, O3 = f"ORD{D}001", f"ORD{D}003"
@@ -54,18 +56,27 @@ def test_unparseable_date_schema_error_then_clarify():
     assert res["results"][0]["target_date"] == "2026-10-02"
 
 
-def test_confirm_issues_ticket():
+def test_confirm_resume_requires_quote_api_without_issuing_ticket():
+    before = data.get_order(O1)
     graph.run_turn("s5", "u_zhang", "帮我改到大后天", order_id=O1)
-    res = graph.resume("s5", {"confirm": True, "index": 0, "confirm_id": "confirm-s5"})
-    assert res["outcome"] == "TICKETED"
-    assert data.get_order(O1)["date"] == "2026-09-29"
-    assert res["interrupt"] is None
+    try:
+        res = graph.resume("s5", {"confirm": True, "index": 0, "confirm_id": "confirm-s5"})
+    except ValueError as exc:
+        assert "Quote API" in str(exc)
+    else:
+        pytest.fail(f"confirm resume 未拒绝旧出票路径：outcome={res['outcome']}, "
+                    f"order_date={data.get_order(O1)['date']}")
+    assert data.get_order(O1) == before
+    assert graph.pending_interrupt("s5")["kind"] == "confirm"
 
 
-def test_cancel_confirm():
+def test_cancel_confirm_does_not_resume_graph():
+    before = data.get_order(O1)
     graph.run_turn("s6", "u_zhang", "帮我改到大后天", order_id=O1)
-    res = graph.resume("s6", {"confirm": False})
-    assert res["outcome"] == "CANCELLED" and data.get_order(O1)["date"] != "2026-09-29"
+    with pytest.raises(ValueError, match="Quote API"):
+        graph.resume("s6", {"confirm": False})
+    assert data.get_order(O1) == before
+    assert graph.pending_interrupt("s6")["kind"] == "confirm"
 
 
 def test_follow_up_uses_memory():

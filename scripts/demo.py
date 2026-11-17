@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local-only demo data commands. Never expose these as remote API endpoints."""
+"""仅供本地使用的演示数据命令；不得暴露为远程 API。"""
 import argparse
 import asyncio
 import sys
@@ -9,13 +9,15 @@ from sqlalchemy import select
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from air_agent import data as legacy_data
-from backend.app.adapters.outbound.postgres.database import SessionFactory
-from backend.app.adapters.outbound.postgres.models import FlightRecord
-from backend.app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.sqlite import data as legacy_data
+from app.adapters.outbound.postgres.database import SessionFactory, initialize_schema
+from app.adapters.outbound.postgres.models import FlightRecord
+from app.adapters.outbound.postgres.seed import seed_demo_data
 
 
 async def reset():
+    """重建业务库和 Agent 投影的演示数据；只供本地命令显式调用。"""
+    await initialize_schema()
     async with SessionFactory() as session:
         await seed_demo_data(session, force=True)
     legacy_data.init(force=True)
@@ -23,6 +25,7 @@ async def reset():
 
 
 async def flight_status(flight_no: str, date: str, status: str, delay_min: int):
+    """同步修改业务库和投影中的航班状态；用于演示非自愿退改分支。"""
     legacy_data.init()
     async with SessionFactory() as session:
         row = await session.scalar(select(FlightRecord).where(
@@ -36,9 +39,10 @@ async def flight_status(flight_no: str, date: str, status: str, delay_min: int):
 
 
 def main():
+    """解析本地演示数据命令；不暴露远程管理入口。"""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("reset", help="重置 PostgreSQL 与 CLI SQLite 演示数据")
+    commands.add_parser("reset", help="重置业务库与检索投影 SQLite 演示数据")
     flight = commands.add_parser("flight-status", help="模拟演示航班状态变化")
     flight.add_argument("flight_no")
     flight.add_argument("date", help="YYYY-MM-DD")

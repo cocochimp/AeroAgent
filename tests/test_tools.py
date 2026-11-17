@@ -1,5 +1,6 @@
 from datetime import date, timedelta
-from air_agent import data, tools
+from app.adapters.outbound.sqlite import data
+from app.application.agents import tools
 
 
 def test_missing_target_date_for_change():
@@ -56,7 +57,7 @@ def test_llm_specs_cover_react_tools():
 
 # ---- 评审修复补充 ----
 import pytest
-from air_agent import engine
+from app.application import fee_engine as engine
 
 ERR_KEYS = {"field", "kind", "expected", "got", "message"}
 
@@ -69,10 +70,11 @@ def test_run_tool_refuses_issue_ticket_and_unknown():
         assert set(r["errors"][0]) == ERR_KEYS
 
 
-def test_validate_still_accepts_issue_ticket():
+def test_validate_rejects_issue_ticket():
     model, errs = tools.validate("tool_issue_ticket", {"order_id": "ORD20260926001", "action": "REFUND",
                                                         "confirm_id": "abcdef123"})
-    assert errs == [] and model.action == "REFUND"
+    assert model is None
+    assert errs[0]["kind"] == "UNKNOWN_TOOL"
 
 
 @pytest.mark.parametrize("tool,args", [

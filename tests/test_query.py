@@ -1,4 +1,5 @@
-from air_agent import data, query
+from app.adapters.outbound.sqlite import data
+from app.application.agents import understanding as query
 
 D = "20260926"
 
@@ -90,7 +91,7 @@ def test_step_back_and_hyde_text():
 # ---------- review fixes ----------
 from datetime import datetime
 import pytest
-from air_agent import settings as S
+from app import config as S
 
 
 @pytest.mark.parametrize("text,expected", [

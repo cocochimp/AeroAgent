@@ -1,6 +1,7 @@
 import pytest
-from air_agent import data, retrieval
-from air_agent import settings as S
+from app.adapters.outbound.sqlite import data
+from app.adapters.outbound import retrieval
+from app import config as S
 
 pytestmark = pytest.mark.slow
 

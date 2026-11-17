@@ -3,13 +3,13 @@ from datetime import datetime
 
 import pytest
 
-from air_agent import settings as S
+from app import config as S
 
 
 def test_defaults_and_update():
     S.reset()
     cfg = S.get()
-    assert cfg["mode"] == "offline"
+    assert cfg["mode"] == "mock"
     assert cfg["verify"]["threshold"] == 0.85
     assert cfg["retrieval"]["k_recall"] == 60
     S.update({"verify": {"threshold": 0.9}})

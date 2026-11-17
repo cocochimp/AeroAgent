@@ -1,5 +1,10 @@
 import json
-from air_agent import evaluation as E
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from app import evaluation as E
 
 
 def test_build_cases_cover_spec():
@@ -80,10 +85,42 @@ def test_full_business_mismatch_makes_evaluation_case_fail(monkeypatch):
 
 
 def test_evaluation_snapshot_selects_requested_cases_and_rejects_unknown_ids():
-    from backend.app.application.evaluations import select_case_snapshot
+    from app.application.evaluations import select_case_snapshot
     cases = [{"id": "a", "question": "退票", "expect": {"outcome": "ANSWER"}},
              {"id": "b", "question": "改签", "expect": {"outcome": "ANSWER"}}]
     assert select_case_snapshot(cases, ["b"]) == [cases[1]]
     import pytest
     with pytest.raises(ValueError, match="未知用例"):
         select_case_snapshot(cases, ["missing"])
+
+
+def test_evaluation_runtime_paths_follow_configured_var_dir(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    var_dir = tmp_path / "userData" / "var"
+    script = """
+import json
+from app import evaluation as E
+from app.adapters.outbound import retrieval
+E.shutil.rmtree = lambda *args, **kwargs: None
+E.graph.reset_graph = lambda: None
+E._sandbox()
+print(json.dumps({
+    "runs": str(E.RUNS_DIR),
+    "sandbox": str(E.S.VAR_DIR),
+    "models": str(getattr(E, "MODEL_DIR", "")),
+    "retrieval_models": str(retrieval.MODEL_DIR),
+}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script], cwd=root, env={**os.environ, "AIR_VAR_DIR": str(var_dir)},
+        capture_output=True, text=True, check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    paths = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert paths == {
+        "runs": str(var_dir / "eval_runs"),
+        "sandbox": str(var_dir / "eval_sandbox"),
+        "models": str(var_dir / "models"),
+        "retrieval_models": str(var_dir / "models"),
+    }

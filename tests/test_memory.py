@@ -1,5 +1,6 @@
-from air_agent import data, memory
-from air_agent import settings as S
+from app.adapters.outbound.sqlite import data
+from app.application.agents import memory
+from app import config as S
 
 D = "20260926"
 
