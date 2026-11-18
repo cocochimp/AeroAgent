@@ -13,6 +13,14 @@ function parseAeroAgentQuote(text) {
   } catch { return null; }
 }
 
+function parseAeroAgentCase(text) {
+  try {
+    const value = JSON.parse(text.trim());
+    return value && typeof value.case_id === "string" && value.case_id.startsWith("case_") && !value.quote_id
+      ? value.case_id : null;
+  } catch { return null; }
+}
+
 function orderView(order) {
   const flight = order.flight || {};
   return { ...order, route: `${flight.origin || "—"} → ${flight.dest || "—"}`,
@@ -360,17 +368,16 @@ function upgradeMessageFences(root) {
   for (const code of codes) {
     if (code.__aeroDone) continue;
     const text = code.textContent || "";
-    const caseMatch = text.match(/```aeroagent-case\s*([\s\S]*?)```/);
+    const caseMatch = text.match(/```aeroagent-case\s*([\s\S]*?)```/) ||
+      (text.trim().startsWith("{") && text.includes('"case_id"') && !text.includes('"quote_id"') ? [null, text] : null);
     if (caseMatch) {
-      code.__aeroDone = true;
-      try {
-        const metadata = JSON.parse(caseMatch[1]);
-        if (metadata.case_id) {
-          lastCaseId = metadata.case_id;
-          (code.closest("pre") || code).style.display = "none";
-          refreshPanel(lastCaseId);
-        }
-      } catch { /* 非案件块保持宿主原样 */ }
+      const caseId = parseAeroAgentCase(caseMatch[1]);
+      if (caseId) {
+        code.__aeroDone = true;
+        lastCaseId = caseId;
+        (code.closest(".md-code-block") || code.closest("pre") || code).style.display = "none";
+        refreshPanel(caseId);
+      }
       continue;
     }
     const quoteMatch = text.match(/```aeroagent-quote\s*([\s\S]*?)```/) ||
@@ -380,7 +387,7 @@ function upgradeMessageFences(root) {
     if (payload) {
       code.__aeroDone = true;
       lastCaseId = payload.case_id;
-      quoteCard(payload, code.closest("pre") || code);
+      quoteCard(payload, code.closest(".md-code-block") || code.closest("pre") || code);
       refreshPanel(payload.case_id);
     }
   }
@@ -452,7 +459,14 @@ function renderInspector() {
 
 async function refreshPanel(caseId) {
   if (!panel) return;
-  if (!caseId) { activeCase = null; renderInspector(); return; }
+  if (!caseId) {
+    activeCase = null;
+    panel.querySelector(".aero-case-id").textContent = "等待案件";
+    panel.querySelector(".aero-case-order").textContent = "未关联";
+    panel.querySelector(".aero-case-state").textContent = "READY";
+    renderInspector();
+    return;
+  }
   try {
     const record = await api(`/api/v1/cases/${caseId}`);
     if (lastCaseId !== caseId && lastCaseId !== record.case_id) return;
@@ -629,6 +643,13 @@ function mount() {
   learning = el("section", { class: "aero-learning aero-ui", "aria-label": "AeroAgent 业务学习" });
   document.body.append(learning);
   const tryShell = () => { mountNavigation(); mountDock(); upgradeMessageFences(document); };
+  document.addEventListener("click", (event) => {
+    if (event.target.closest?.("button[aria-label='新建会话']")) {
+      followController?.abort();
+      lastCaseId = null;
+      refreshPanel(null);
+    }
+  });
   tryShell();
   new MutationObserver(tryShell).observe(document.body, { childList: true, subtree: true });
   window.addEventListener("resize", syncLayout);
@@ -644,7 +665,7 @@ const inject = [];
 function apply() { /* 客户端以 DOM 注入方式工作，无需服务端注册 */ }
 
 globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
-  { parseAeroAgentQuote, orderView, requestKeys, caseView, shouldStopFollowing, quoteStateAfter });
+  { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing, quoteStateAfter });
 if (typeof window !== "undefined" && window.__ModuleLoader__ && !globalThis.__AERO_DSH_MODULE_REGISTERED) {
   window.__ModuleLoader__.load({ id: "dsh-plugin-aeroagent", factory: () => ({ inject, apply }) });
   globalThis.__AERO_DSH_MODULE_REGISTERED = true;

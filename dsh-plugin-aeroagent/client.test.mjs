@@ -3,13 +3,19 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import "./client.js";
 
-const { parseAeroAgentQuote, orderView, requestKeys, caseView, shouldStopFollowing, quoteStateAfter } =
+const { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing, quoteStateAfter } =
   globalThis.AeroAgentClient || {};
 
 test("parses only valid AeroAgent quote JSON", () => {
   assert.equal(parseAeroAgentQuote("ordinary text"), null);
   assert.equal(parseAeroAgentQuote('{"quote_id":"q1"'), null);
   assert.equal(parseAeroAgentQuote('{"quote_id":"q1","case_id":"case_1","action":"REFUND"}').quote_id, "q1");
+});
+
+test("parses raw case metadata left by host markdown rendering", () => {
+  assert.equal(parseAeroAgentCase('{"case_id":"case_1"}'), "case_1");
+  assert.equal(parseAeroAgentCase('{"case_id":"case_1","quote_id":"q1"}'), null);
+  assert.equal(parseAeroAgentCase("ordinary text"), null);
 });
 
 test("maps the real nested order response", () => {

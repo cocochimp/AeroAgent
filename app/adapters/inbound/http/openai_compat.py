@@ -13,6 +13,7 @@ from app.application.agents import orchestrator
 router = APIRouter(tags=["openai-compat"])
 
 _ORDER_INTENT = re.compile(r"(订单|order|列表|list)", re.I)
+_SERVICING_INTENT = re.compile(r"(退票|改签|refund|change)", re.I)
 
 
 class CompatMessage(BaseModel):
@@ -39,6 +40,10 @@ def _tool_names(request: CompatRequest) -> set[str]:
 def _last_user(request: CompatRequest) -> str:
     for message in reversed(request.messages):
         if message.role == "user" and message.content:
+            # DSH 会把采样时间与系统提醒作为合成 user 消息追加到业务诉求之后。
+            if message.content.strip().startswith(("Time sampled while preparing turn", "<system-reminder>",
+                                                   "Current runtime context.")):
+                continue
             return message.content
     return ""
 
@@ -182,7 +187,8 @@ async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] |
         return f"【AeroAgent】工具返回：{tool_content[:1500]}", None
     case_id = _latest_case_id(request)
     names = _tool_names(request)
-    if not case_id and "aeroagent_list_orders" in names and _ORDER_INTENT.search(_last_user(request)):
+    if (not case_id and "aeroagent_list_orders" in names and _ORDER_INTENT.search(_last_user(request))
+            and not _SERVICING_INTENT.search(_last_user(request))):
         call = [{"index": 0, "id": f"call_{uuid.uuid4().hex}", "type": "function",
                  "function": {"name": "aeroagent_list_orders",
                               "arguments": json.dumps({"user_id": "u_zhang"})}}]

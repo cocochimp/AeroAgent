@@ -73,6 +73,47 @@ def test_plain_question_runs_the_servicing_mainline(client):
     assert response.json()["usage"]["total_tokens"] > 0
 
 
+def test_dsh_timing_metadata_does_not_replace_business_message():
+    request = openai_compat.CompatRequest(messages=[
+        {"role": "user", "content": "@ORD20261118010 帮我办理退票"},
+        {"role": "user", "content": "Time sampled while preparing turn 1, step 1: 2026-11-18T12:22:50+08:00[Asia/Shanghai]\nBrowser time zone for this request: Asia/Shanghai.\nElapsed since the preceding model-visible message: unavailable."},
+    ])
+    assert openai_compat._last_user(request) == "@ORD20261118010 帮我办理退票"
+
+
+def test_dsh_system_reminder_does_not_replace_business_message():
+    request = openai_compat.CompatRequest(messages=[
+        {"role": "user", "content": "@ORD20261118010 帮我办理退票"},
+        {"role": "user", "content": "<system-reminder>\nA skill is a reusable set of task-specific instructions.\n</system-reminder>"},
+    ])
+    assert openai_compat._last_user(request) == "@ORD20261118010 帮我办理退票"
+
+
+def test_dsh_runtime_context_does_not_replace_business_message():
+    request = openai_compat.CompatRequest(messages=[
+        {"role": "user", "content": "@ORD20261118010 帮我办理退票"},
+        {"role": "user", "content": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent working directory: /repo."},
+    ])
+    assert openai_compat._last_user(request) == "@ORD20261118010 帮我办理退票"
+
+
+def test_refund_intent_takes_priority_over_order_list_delegation(monkeypatch):
+    calls = []
+
+    async def fake_run(message, case_id=None):
+        calls.append((message, case_id))
+        return {"case_id": "case_refund", "status": "PROPOSED", "final": "退票方案"}
+
+    monkeypatch.setattr(openai_compat, "_run_servicing_case", fake_run)
+    request = openai_compat.CompatRequest(
+        messages=[{"role": "user", "content": "Order ORD20261118010 帮我办理退票"}],
+        tools=[{"type": "function", "function": {"name": "aeroagent_list_orders"}}],
+    )
+    _, tool_calls = asyncio.run(openai_compat._completion_content(request))
+    assert tool_calls is None
+    assert calls == [("Order ORD20261118010 帮我办理退票", None)]
+
+
 def test_case_metadata_round_trips_through_assistant_history(monkeypatch):
     content = openai_compat._render_case_result({
         "case_id": "case_abc",
