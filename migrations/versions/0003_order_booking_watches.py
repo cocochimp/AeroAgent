@@ -19,31 +19,33 @@ depends_on = None
 
 
 def upgrade():
-    """为历史订单回填 UTC 时间和 CNY，并创建预订、观测和提醒表。"""
+    """为历史订单回填 UTC 时间和 CNY，并创建预订、观测和提醒表。
+
+    SQLite 不能原地改列约束，且 `orders` 被 `service_cases.order_id` 外键引用，
+    batch 重建会触发 FOREIGN KEY 约束失败。因此这里只做增量列 + 幂等回填；
+    非空约束只在支持 ALTER 的数据库上收紧。
+    """
     bind = op.get_bind()
+    sqlite = bind.dialect.name == "sqlite"
     # 0001 以当前 ORM metadata 建表；全新升级时这些列已存在，历史 0002 库则需要增量添加。
     columns = {column["name"] for column in sa.inspect(bind).get_columns("orders")}
-    added_timestamps = False
-    # SQLite 禁止 ADD COLUMN 使用 CURRENT_TIMESTAMP；先回填，再通过 batch 重建恢复非空默认值。
     if "created_at" not in columns:
         op.add_column("orders", sa.Column("created_at", sa.DateTime(timezone=True), nullable=True))
-        added_timestamps = True
     if "updated_at" not in columns:
         op.add_column("orders", sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True))
-        added_timestamps = True
     if "currency" not in columns:
         op.add_column("orders", sa.Column("currency", sa.String(length=3), nullable=False,
                                           server_default="CNY"))
     if "paid_at" not in columns:
         op.add_column("orders", sa.Column("paid_at", sa.DateTime(timezone=True), nullable=True))
-    if added_timestamps:
-        op.execute("UPDATE orders SET created_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP "
-                   "WHERE created_at IS NULL OR updated_at IS NULL")
-        with op.batch_alter_table("orders") as batch:
-            batch.alter_column("created_at", existing_type=sa.DateTime(timezone=True), nullable=False,
-                               server_default=sa.text("CURRENT_TIMESTAMP"))
-            batch.alter_column("updated_at", existing_type=sa.DateTime(timezone=True), nullable=False,
-                               server_default=sa.text("CURRENT_TIMESTAMP"))
+    # 回填必须无条件且幂等：失败重跑后历史行仍可能为空，不能只看列是否存在。
+    op.execute("UPDATE orders SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+    op.execute("UPDATE orders SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
+    if not sqlite:
+        op.alter_column("orders", "created_at", existing_type=sa.DateTime(timezone=True),
+                        nullable=False, server_default=sa.text("CURRENT_TIMESTAMP"))
+        op.alter_column("orders", "updated_at", existing_type=sa.DateTime(timezone=True),
+                        nullable=False, server_default=sa.text("CURRENT_TIMESTAMP"))
     order_indexes = {index["name"] for index in sa.inspect(bind).get_indexes("orders")}
     if "ix_orders_user_created" not in order_indexes:
         op.create_index("ix_orders_user_created", "orders", ["user_id", "created_at"])
@@ -55,13 +57,15 @@ def upgrade():
 
 
 def downgrade():
-    """删除本迁移新增的监控和预订数据，再移除订单字段与索引。"""
+    """删除本迁移新增的监控和预订数据；SQLite 保留增量列，避免重建被外键引用的订单表。"""
     bind = op.get_bind()
     for model in (PriceAlertRecord, PriceObservationRecord, PriceWatchRecord, BookingAttemptRecord):
         model.__table__.drop(bind=bind, checkfirst=True)
-    op.drop_index("ix_flight_route_date", table_name="flights")
-    op.drop_index("ix_orders_user_created", table_name="orders")
-    op.drop_column("orders", "paid_at")
-    op.drop_column("orders", "currency")
-    op.drop_column("orders", "updated_at")
-    op.drop_column("orders", "created_at")
+    for name, table in (("ix_flight_route_date", "flights"), ("ix_orders_user_created", "orders")):
+        try:
+            op.drop_index(name, table_name=table)
+        except Exception:                      # noqa: BLE001 - 索引可能从未创建
+            pass
+    if bind.dialect.name != "sqlite":
+        for column in ("paid_at", "currency", "updated_at", "created_at"):
+            op.drop_column("orders", column)

@@ -221,3 +221,38 @@ def test_booking_routes_require_authentication():
     client = TestClient(app)
     assert client.post("/api/v1/bookings", json={}).status_code == 401
     assert client.post("/api/v1/bookings/bk_1/pay", json={}).status_code == 401
+
+
+def test_reading_an_issued_booking_is_not_a_replay(tmp_path, monkeypatch):
+    async def check(api, _, factory, selected, projections):
+        created = await api.create_booking(api.BookingCreateRequest(**_command(selected)), USER)
+        await api.pay_booking(created["booking_id"], api.MockPaymentRequest(idempotency_key="payment-read-1"), USER)
+
+        read = await api.get_booking(created["booking_id"], USER)
+
+        assert read["status"] == "ISSUED"
+        assert read["idempotent"] is False, "纯读取不能声称是幂等重放"
+
+    _run_with_db(tmp_path, monkeypatch, check)
+
+
+def test_payment_revalidates_flight_availability(tmp_path, monkeypatch):
+    async def check(api, service, factory, selected, projections):
+        created = await api.create_booking(api.BookingCreateRequest(**_command(selected)), USER)
+        async with factory() as session:
+            flight = await session.scalar(select(FlightRecord).where(
+                FlightRecord.flight_no == selected[0], FlightRecord.date == selected[1]))
+            flight.status = "cancelled"
+            await session.commit()
+
+        with pytest.raises(HTTPException) as rejected:
+            await api.pay_booking(created["booking_id"], api.MockPaymentRequest(idempotency_key="payment-cancel-1"), USER)
+        assert rejected.value.status_code == 409
+        assert rejected.value.detail["code"] == "FLIGHT_UNAVAILABLE"
+
+        async with factory() as session:
+            order = await session.get(OrderRecord, created["order_id"])
+        assert order.status == "PENDING_PAYMENT", "取消的航班不能出票"
+        assert order.ticket_no == ""
+
+    _run_with_db(tmp_path, monkeypatch, check)

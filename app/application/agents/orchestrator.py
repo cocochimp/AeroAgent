@@ -110,6 +110,11 @@ def agent_node(state):
         a = {"thought": "已达到 ReAct 轮数上限，转人工", "action": "human", "args": {}, "source": "guard"}
     else:
         a = _solution_agent.decide(state, _llm(state))
+        done = {call["tool"] for call in state.get("calls") or [] if call.get("ok")}
+        if a.get("source") == "llm" and a.get("action") in done:
+            # 模型重复点名已成功的工具会空转；按确定性计划推进下一件未完成的事。
+            a = {**planner.rule_decide(state), "source": "guard",
+                 "guard_reason": f"{a['action']} 已执行成功，按计划推进"}
     note = f"第 {rounds} 轮 → {a['action']}"
     if a.get("source") == "fallback":
         note += "；DeepSeek 调用失败，已回退规则决策"

@@ -149,3 +149,52 @@ def test_internal_quote_ids_never_reach_the_transcript(native):
     for quote in case["quotes"]:
         assert quote["quote_id"] not in content
         assert json.dumps(quote, ensure_ascii=False) not in content
+
+def test_confirmed_quote_runs_the_transaction_to_a_new_ticket(native):
+    """确认方案后必须真正走完交易：案件 COMPLETED、报价 EXECUTED、产生新票号。"""
+    from app.application.agents.transaction_agent import ConfirmedQuoteCommand, TicketTransactionAgent
+
+    content = _content(_chat(native, ("user", "@ORD20260926010 帮我改签到后天，请生成可选方案。")))
+    case_id, _ = _case_id(content)
+    case = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_zhang"}).json()
+    quote = case["quotes"][0]
+    assert quote["status"] == "OFFERED"
+
+    confirmed = native.post(f"/api/v1/quotes/{quote['quote_id']}/confirm",
+                            json={"confirmation_id": "confirm-e2e", "idempotency_key": "ticket-e2e"},
+                            headers={"Authorization": "Bearer demo:u_zhang"})
+    assert confirmed.status_code == 202, confirmed.text
+    operation_id = confirmed.json()["operation_id"]
+
+    asyncio.run(TicketTransactionAgent().execute(ConfirmedQuoteCommand(operation_id)))
+
+    done = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_zhang"}).json()
+    assert done["status"] == "COMPLETED"
+    assert done["result"]["operation"]["status"] == "CHANGED"
+    assert done["result"]["operation"]["ticket_no"]
+    assert done["quotes"][0]["status"] == "EXECUTED"
+    order = native.get("/api/v1/orders?q=ORD20260926010",
+                       headers={"Authorization": "Bearer demo:u_zhang"}).json()
+    assert order["orders"][0]["ticket_no"] == done["result"]["operation"]["ticket_no"]
+
+
+def test_confirmation_is_idempotent_for_the_same_key(native):
+    """相同幂等键重放不会重复出票，也不会产生第二笔操作。"""
+    from app.application.agents.transaction_agent import ConfirmedQuoteCommand, TicketTransactionAgent
+
+    content = _content(_chat(native, ("user", "@ORD20260926008 帮我改签到后天。")))
+    case_id, _ = _case_id(content)
+    case = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_wang"}).json()
+    if not case["quotes"]:
+        pytest.skip("该演示订单不可改签，跳过确认链路")
+    quote = case["quotes"][0]
+    body = {"confirmation_id": "confirm-replay", "idempotency_key": "ticket-replay"}
+    first = native.post(f"/api/v1/quotes/{quote['quote_id']}/confirm", json=body,
+                        headers={"Authorization": "Bearer demo:u_wang"})
+    assert first.status_code == 202, first.text
+    asyncio.run(TicketTransactionAgent().execute(ConfirmedQuoteCommand(first.json()["operation_id"])))
+    replay = native.post(f"/api/v1/quotes/{quote['quote_id']}/confirm", json=body,
+                         headers={"Authorization": "Bearer demo:u_wang"})
+    assert replay.status_code == 202
+    assert replay.json()["operation_id"] == first.json()["operation_id"]
+    assert replay.json()["idempotent"] is True

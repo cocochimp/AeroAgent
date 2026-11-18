@@ -145,3 +145,63 @@ def test_full_migration_chain_handles_current_initial_metadata(tmp_path):
     assert {"created_at", "updated_at", "currency", "paid_at"} <= {
         column["name"] for column in inspector.get_columns("orders")}
     engine.dispose()
+
+
+def _legacy_db_with_case_fk(path):
+    """旧库形状：orders 被 service_cases.order_id 外键引用，且缺少新列。"""
+    engine = create_engine(f"sqlite:///{path}")
+    metadata = MetaData()
+    Table("flights", metadata,
+          Column("id", Integer, primary_key=True),
+          Column("origin", String(8), nullable=False),
+          Column("dest", String(8), nullable=False),
+          Column("date", String(10), nullable=False))
+    orders = Table(
+        "orders", metadata,
+        Column("order_id", String(64), primary_key=True),
+        Column("user_id", String(64), nullable=False),
+        Column("passenger", String(160), nullable=False),
+        Column("flight_no", String(16), nullable=False),
+        Column("date", String(10), nullable=False),
+        Column("airline", String(4), nullable=False),
+        Column("cabin", String(8), nullable=False),
+        Column("fare_product", String(40), nullable=False),
+        Column("fare", Integer, nullable=False),
+        Column("tax", Integer, nullable=False),
+        Column("status", String(24), nullable=False),
+        Column("ticket_no", String(40), nullable=False),
+    )
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("PRAGMA foreign_keys=ON"))
+        connection.execute(text("""
+            CREATE TABLE service_cases (
+                case_id VARCHAR(64) PRIMARY KEY,
+                order_id VARCHAR(64) REFERENCES orders(order_id)
+            )
+        """))
+        connection.execute(orders.insert().values(
+            order_id="ORD-LEGACY", user_id="u1", passenger="Legacy", flight_no="MU5101",
+            date="2026-09-28", airline="MU", cabin="Y", fare_product="Y", fare=500,
+            tax=50, status="ISSUED", ticket_no="781-1"))
+    return engine
+
+
+def test_migration_survives_case_foreign_key_and_is_retry_safe(tmp_path):
+    migration = importlib.import_module("migrations.versions.0003_order_booking_watches")
+
+    engine = _legacy_db_with_case_fk(tmp_path / "legacy-fk.db")
+    try:
+        for _ in range(2):                      # 第二次等价于失败后的重跑
+            with engine.begin() as connection:
+                context = MigrationContext.configure(connection)
+                with Operations.context(context):
+                    migration.upgrade()
+        with engine.connect() as connection:
+            row = connection.execute(text(
+                "SELECT created_at, updated_at, currency FROM orders WHERE order_id='ORD-LEGACY'"
+            )).mappings().one()
+        assert row["created_at"] is not None and row["updated_at"] is not None
+        assert row["currency"] == "CNY"
+    finally:
+        engine.dispose()

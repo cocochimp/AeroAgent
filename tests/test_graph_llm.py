@@ -100,10 +100,14 @@ def test_llm_failure_falls_back_to_rules():
     assert all(e["output"]["source"] == "fallback" for e in res["trace"] if e["node"] == "agent_node")
 
 
-def test_round_limit_goes_human():
+def test_round_limit_goes_human(monkeypatch):
+    from app import config as S
+    monkeypatch.setitem(S.DEFAULTS["planner"], "max_rounds", 2)
+    S.update({"planner": {"max_rounds": 2}})
     fake = llm.FakeLLM(react=[act("tool_flight_status", {"flight_no": "MU5101", "date": "2026-09-28"})] * 10)
     res = graph.run_turn("l5", "u_zhang", "改到后天", order_id=O1, mode="deepseek", client=fake)
     assert res["outcome"] == "HUMAN"
+    assert "轮数上限" in " ".join(res["final"].get("reasons") or [])
 
 
 def test_past_iso_clarifies_before_paid_model_or_tool_calls():
@@ -182,3 +186,20 @@ def test_ambiguous_natural_language_intent_clarification_asks_again():
     assert resumed["interrupt"]["field"] == "intent"
     assert resumed["parsed"]["intents"] == []
     assert not [e for e in resumed["trace"] if e["node"] == "agent_node"]
+
+
+def test_repeated_completed_tool_falls_back_to_the_deterministic_plan():
+    """模型反复点名已成功的工具时空转；守卫应按计划推进而不是耗尽轮数转人工。"""
+    fake = llm.FakeLLM(react=[
+        act("tool_flight_status", {"flight_no": "MU5101", "date": "2026-09-28"}),
+        act("tool_flight_status", {"flight_no": "MU5101", "date": "2026-09-28"}),
+        act("tool_flight_status", {"flight_no": "MU5101", "date": "2026-09-28"}),
+        act("tool_flight_status", {"flight_no": "MU5101", "date": "2026-09-28"}),
+    ])
+    res = graph.run_turn("l-guard", "u_zhang", "改到后天", order_id=O1, mode="deepseek", client=fake)
+
+    actions = [e["output"]["action"] for e in res["trace"]
+               if e["node"] == "agent_node" and e.get("output")]
+    assert "tool_rule_retrieve" in actions, "重复工具后必须推进到规则检索"
+    assert "human_review" not in [e["node"] for e in res["trace"]]
+    assert res["outcome"] in {"ANSWER", "HUMAN"} and res.get("verify", {}).get("errors", []) != ["已达到 ReAct 轮数上限，转人工"]

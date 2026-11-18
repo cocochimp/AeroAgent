@@ -104,10 +104,10 @@ async def create_booking(user_id: str, flight_no: str, date: str, fare_product: 
 
 
 async def get_booking(booking_id: str, user_id: str) -> dict:
-    """读取当前主体自有预订及最新支付状态。"""
+    """读取当前主体自有预订及最新支付状态；纯读取不是幂等重放。"""
     async with SessionFactory() as session:
         attempt, order = await _owned_booking(session, booking_id, user_id)
-        return _booking_out(order, attempt, idempotent=order.status == "ISSUED")
+        return _booking_out(order, attempt)
 
 
 async def pay_booking(booking_id: str, user_id: str, idempotency_key: str) -> dict:
@@ -120,6 +120,12 @@ async def pay_booking(booking_id: str, user_id: str, idempotency_key: str) -> di
             return _booking_out(order, attempt, idempotent=True)
         if order.status != "PENDING_PAYMENT":
             raise BookingError("BOOKING_NOT_PAYABLE", "当前订单状态不允许模拟支付")
+        flight = await session.scalar(select(FlightRecord).where(
+            FlightRecord.flight_no == order.flight_no, FlightRecord.date == order.date))
+        if flight is None or flight.status != "scheduled":
+            raise BookingError("FLIGHT_UNAVAILABLE", "该航班已取消或不可预订，无法完成支付")
+        if order.fare_product not in (flight.fares or {}):
+            raise BookingError("FARE_UNAVAILABLE", "该航班当前没有所选票价产品")
         key_owner = await session.scalar(select(BookingAttemptRecord).where(
             BookingAttemptRecord.payment_idempotency_key == idempotency_key))
         if key_owner is not None and key_owner.booking_id != booking_id:

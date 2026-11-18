@@ -1,5 +1,6 @@
 """持久化低价监控、价格观测和站内提醒历史；不发送外部通知。"""
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -189,9 +190,10 @@ async def evaluate_watch(watch_id: str, user_id: str | None = None, *, source: s
                         baseline_total=watch.baseline_total, observed_total=total, currency=watch.currency,
                         message=(f"{watch.flight_no} {watch.date} {watch.fare_product} 总价降至 "
                                  f"{total} {watch.currency}（基线 {watch.baseline_total}）"), created_at=now)
-                    session.add(candidate)
                     try:
+                        # 候选必须在保存点内加入：失败时回滚只吞掉提醒，观测与评估时间仍要提交。
                         async with session.begin_nested():
+                            session.add(candidate)
                             await session.flush()
                         alert = candidate
                     except IntegrityError:
@@ -203,17 +205,23 @@ async def evaluate_watch(watch_id: str, user_id: str | None = None, *, source: s
 
 
 async def evaluate_all_watches() -> dict:
-    """后端运行时评估全部有效监控；每条监控独立事务并复用统一阈值和去重逻辑。"""
+    """后端运行时评估全部有效监控；每条监控独立事务，单条失败不影响其余监控。"""
     async with SessionFactory() as session:
         watch_ids = list(await session.scalars(select(PriceWatchRecord.watch_id).where(
             PriceWatchRecord.active.is_(True)).order_by(PriceWatchRecord.watch_id)))
     evaluated = 0
     alerts = 0
+    failed = 0
     for watch_id in watch_ids:
-        result = await evaluate_watch(watch_id, source="scheduled")
+        try:
+            result = await evaluate_watch(watch_id, source="scheduled")
+        except Exception:                      # noqa: BLE001 - 单条监控失败必须隔离
+            failed += 1
+            logging.getLogger(__name__).exception("watch evaluation failed: %s", watch_id)
+            continue
         evaluated += 1
         alerts += int(result["alert"] is not None)
-    return {"evaluated": evaluated, "alerts": alerts}
+    return {"evaluated": evaluated, "alerts": alerts, "failed": failed}
 
 
 async def list_alerts(user_id: str, *, limit: int = 100) -> dict:

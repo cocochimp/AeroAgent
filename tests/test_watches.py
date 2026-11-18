@@ -146,7 +146,7 @@ def test_backend_evaluation_marks_scheduled_observations(tmp_path, monkeypatch):
             selected, target_total=selected[2])), USER)
         result = await service.evaluate_all_watches()
 
-        assert result == {"evaluated": 1, "alerts": 0}
+        assert result == {"evaluated": 1, "alerts": 0, "failed": 0}
         async with factory() as session:
             observation = await session.scalar(select(PriceObservationRecord))
             watch = await session.get(PriceWatchRecord, created["watch_id"])
@@ -191,3 +191,57 @@ def test_watch_routes_require_authentication():
     assert client.get("/api/v1/watches").status_code == 401
     assert client.get("/api/v1/watches/alerts").status_code == 401
     assert client.post("/api/v1/watches", json={}).status_code == 401
+
+
+def test_concurrent_alert_dedupe_keeps_observation_and_commit(tmp_path, monkeypatch):
+    """并发去重要在保存点内失败：观测与评估时间必须落库，请求不能变成 500。"""
+    async def check(_, service, factory, selected):
+        await service.create_watch(USER.user_id, **_command(selected, target_total=selected[2] + 50))
+        watches = await service.list_watches(USER.user_id)
+        watch_id = watches["watches"][0]["watch_id"]
+        first = await service.evaluate_watch(watch_id, source="scheduled")
+        assert first["alert"] is not None
+
+        class RacingSession(AsyncSession):
+            async def get(self, entity, ident, **kwargs):
+                if entity is PriceAlertRecord:
+                    return None            # 模拟并发评估尚未看到对方刚写入的提醒
+                return await super().get(entity, ident, **kwargs)
+
+        racing = async_sessionmaker(factory.kw["bind"], expire_on_commit=False, class_=RacingSession)
+        monkeypatch.setattr(service, "SessionFactory", racing)
+        second = await service.evaluate_watch(watch_id, source="scheduled")
+
+        assert second["alert"] is None
+        assert second["deduplicated_alert_id"] == first["alert"]["alert_id"]
+        async with factory() as session:
+            observations = await session.scalar(select(func.count()).select_from(PriceObservationRecord))
+            alerts = await session.scalar(select(func.count()).select_from(PriceAlertRecord))
+            watch = await session.get(PriceWatchRecord, watch_id)
+        assert observations == 2, "重复提醒不能丢观测"
+        assert alerts == 1 and watch.last_evaluated_at is not None
+
+    _run_with_db(tmp_path, monkeypatch, check)
+
+
+def test_one_failing_watch_does_not_stop_the_others(tmp_path, monkeypatch):
+    async def check(_, service, factory, selected):
+        await service.create_watch(USER.user_id, **_command(selected, target_total=selected[2] + 50))
+        await service.create_watch(USER.user_id, **_command(selected, target_total=selected[2] + 60))
+        watches = (await service.list_watches(USER.user_id))["watches"]
+        failing, healthy = watches[0]["watch_id"], watches[1]["watch_id"]
+        calls = []
+
+        async def fake(watch_id, source="scheduled"):
+            calls.append(watch_id)
+            if watch_id == failing:
+                raise RuntimeError("boom")
+            return {"alert": {"alert_id": "alert_ok"}, "observation": {}, "watch": {}}
+
+        monkeypatch.setattr(service, "evaluate_watch", fake)
+        result = await service.evaluate_all_watches()
+
+        assert calls == [failing, healthy], "单条失败后必须继续评估其余监控"
+        assert result == {"evaluated": 1, "alerts": 1, "failed": 1}
+
+    _run_with_db(tmp_path, monkeypatch, check)
