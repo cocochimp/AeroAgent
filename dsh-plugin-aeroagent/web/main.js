@@ -3,6 +3,83 @@ import { el, stateView } from "./components.js";
 import { BUSINESS_NAV, LEARNING_NAV, PAGE_LOADERS, createRouter } from "./router.js";
 import { createStore } from "./store.js";
 
+const NATIVE_ACTION_SELECTOR = [
+  "button[aria-label='插件']", "button[aria-label='自动化']", "button[aria-label='自动任务']",
+  "[role='button'][aria-label='插件']", "[role='button'][aria-label='自动化']", "[role='button'][aria-label='自动任务']",
+].join(",");
+const HOST_NAV_SELECTOR = "nav.hHd-Xa_panelList, nav[aria-label='会话历史'], nav[aria-label='对话历史']";
+
+/** Move native DSH actions without cloning them, preserving their original event handlers. */
+export function integrateDshHost({ document: doc = globalThis.document, moreMenu } = {}) {
+  const moved = new Map();
+  const hidden = new Map();
+  let nativeContainer = null;
+  function sync() {
+    if (!doc || !moreMenu) return;
+    const actions = [...doc.querySelectorAll(NATIVE_ACTION_SELECTOR)].filter((node) => !node.closest("#aeroagent-dsh-root"));
+    if (actions.length && !nativeContainer) {
+      nativeContainer = doc.createElement("section");
+      nativeContainer.className = "aa-native-actions";
+      nativeContainer.dataset.aeroagentNativeActions = "true";
+      const label = doc.createElement("p");
+      label.className = "aa-user-menu-label";
+      label.textContent = "DSH 工具";
+      nativeContainer.append(label);
+      moreMenu.append(nativeContainer);
+    }
+    for (const node of actions) {
+      if (moved.has(node) || moreMenu.contains(node)) continue;
+      moved.set(node, { parent: node.parentNode, nextSibling: node.nextSibling, close: () => { moreMenu.hidden = true; } });
+      const record = moved.get(node);
+      node.classList.add("aa-native-action");
+      node.addEventListener("click", record.close);
+      nativeContainer.append(node);
+    }
+    for (const nav of doc.querySelectorAll(HOST_NAV_SELECTOR)) {
+      if (nav.closest("#aeroagent-dsh-root") || hidden.has(nav)) continue;
+      hidden.set(nav, nav.hidden);
+      nav.hidden = true;
+      nav.setAttribute("data-aeroagent-host-hidden", "true");
+    }
+  }
+  function restore() {
+    for (const [node, record] of [...moved.entries()].reverse()) {
+      node.removeEventListener("click", record.close);
+      node.classList.remove("aa-native-action");
+      if (record.parent) {
+        const reference = record.nextSibling?.parentNode === record.parent ? record.nextSibling : null;
+        record.parent.insertBefore(node, reference);
+      }
+    }
+    for (const [nav, wasHidden] of hidden) {
+      nav.hidden = wasHidden;
+      nav.removeAttribute("data-aeroagent-host-hidden");
+    }
+    nativeContainer?.remove();
+    nativeContainer = null;
+    moved.clear(); hidden.clear();
+  }
+  return { sync, restore };
+}
+
+/** Production auto-entry used by the injected module and DOM regression tests. */
+export function autoMountAeroAgent({ document: doc = globalThis.document, window: win = globalThis.window,
+  mount = mountAeroAgent } = {}) {
+  if (!doc) return false;
+  const start = () => {
+    mount();
+    const root = doc.getElementById("aeroagent-dsh-root");
+    if (!root) return false;
+    if (win) win.__AERO_CLIENT_LOADED = true;
+    return true;
+  };
+  if (doc.readyState === "loading") {
+    doc.addEventListener("DOMContentLoaded", start, { once: true });
+    return false;
+  }
+  return start();
+}
+
 export function mountAeroAgent({ backend = globalThis.AEROAGENT_BACKEND_URL || "http://127.0.0.1:8000" } = {}) {
   const existing = document.getElementById("aeroagent-dsh-root");
   if (existing) return existing.__aeroDestroy || (() => {});
@@ -94,14 +171,18 @@ export function mountAeroAgent({ backend = globalThis.AEROAGENT_BACKEND_URL || "
   const unsubscribe = store.subscribe(() => { drawHistory(); drawUser(); });
   drawHistory(); drawUser();
   document.body.append(root);
+  const hostIntegration = integrateDshHost({ moreMenu });
+  hostIntegration.sync();
+  const observer = typeof MutationObserver === "function" ? new MutationObserver(hostIntegration.sync) : null;
+  observer?.observe(document.body, { childList: true, subtree: true });
   router.navigate("chat");
-  const destroy = () => { unsubscribe(); router.destroy(); root.remove(); delete root.__aeroDestroy; };
+  const destroy = () => {
+    unsubscribe(); observer?.disconnect(); hostIntegration.restore(); router.destroy(); root.remove();
+    if (typeof window !== "undefined") window.__AERO_CLIENT_LOADED = false;
+    delete root.__aeroDestroy;
+  };
   root.__aeroDestroy = destroy;
   return destroy;
 }
 
-if (typeof document !== "undefined") {
-  const start = () => mountAeroAgent();
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
-  else start();
-}
+autoMountAeroAgent();

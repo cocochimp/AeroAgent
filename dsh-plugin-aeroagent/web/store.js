@@ -12,6 +12,7 @@ const blankSession = () => ({ sessionId: `dsh-${newId()}`, caseId: null, selecte
 /** Session snapshots and request ownership are always keyed by demo user. */
 export function createStore({ storage = globalThis.localStorage, initialUserId = "u_zhang" } = {}) {
   let userId = initialUserId;
+  let generation = 0;
   let users = DEMO_USERS.map((user) => ({ ...user }));
   const sessions = new Map();
   const histories = new Map();
@@ -55,6 +56,15 @@ export function createStore({ storage = globalThis.localStorage, initialUserId =
     requests.delete(id);
   }
 
+  function captureOwner() {
+    return { userId, sessionId: getSession(userId).sessionId, generation };
+  }
+
+  function isOwnerCurrent(owner) {
+    return Boolean(owner && owner.generation === generation && owner.userId === userId &&
+      owner.sessionId === getSession(userId).sessionId);
+  }
+
   function getHistory(id = userId) {
     if (!histories.has(id)) {
       let restored = [];
@@ -81,6 +91,8 @@ export function createStore({ storage = globalThis.localStorage, initialUserId =
       notify("users");
     },
     getSession,
+    captureOwner,
+    isOwnerCurrent,
     patchSession(patch, id = userId) {
       const allowed = {};
       if (Object.hasOwn(patch, "caseId")) allowed.caseId = typeof patch.caseId === "string" ? patch.caseId : null;
@@ -88,22 +100,38 @@ export function createStore({ storage = globalThis.localStorage, initialUserId =
       if (Object.hasOwn(patch, "selectedOrderId")) allowed.selectedOrderId = typeof patch.selectedOrderId === "string" ? patch.selectedOrderId : null;
       return mutate(id, allowed);
     },
+    patchSessionFor(owner, patch) {
+      if (!isOwnerCurrent(owner)) return null;
+      return this.patchSession(patch, owner.userId);
+    },
     selectOrder(orderId, id = userId) { return mutate(id, { selectedOrderId: typeof orderId === "string" ? orderId : null }); },
+    selectOrderFor(owner, orderId) {
+      if (!isOwnerCurrent(owner)) return null;
+      return mutate(owner.userId, { selectedOrderId: typeof orderId === "string" ? orderId : null });
+    },
     appendMessage(message, id = userId) {
       if (!message || !["user", "assistant", "system"].includes(message.role) || typeof message.text !== "string") return getSession(id);
       const session = getSession(id);
       return mutate(id, { messages: [...session.messages, { role: message.role, text: message.text }].slice(-100) });
     },
+    appendMessageFor(owner, message) {
+      if (!isOwnerCurrent(owner)) return null;
+      if (!message || !["user", "assistant", "system"].includes(message.role) || typeof message.text !== "string") return getSession(owner.userId);
+      const session = getSession(owner.userId);
+      return mutate(owner.userId, { messages: [...session.messages, { role: message.role, text: message.text }].slice(-100) });
+    },
     switchUser(nextUserId) {
       if (typeof nextUserId !== "string" || !nextUserId || nextUserId === userId) return;
       if (!users.some((user) => user.user_id === nextUserId)) throw new Error("未知演示用户");
       abortRequests(userId);
+      generation += 1;
       userId = nextUserId;
       getSession(userId);
       notify("user");
     },
     newSession() {
       abortRequests(userId);
+      generation += 1;
       const previous = getSession();
       if (previous.caseId || previous.messages.length) {
         const history = getHistory().filter((item) => item.caseId !== previous.caseId);
@@ -121,6 +149,7 @@ export function createStore({ storage = globalThis.localStorage, initialUserId =
       const archived = history.find((item) => item.caseId === caseId);
       if (!archived) return null;
       abortRequests(userId);
+      generation += 1;
       const current = getSession();
       const nextHistory = history.filter((item) => item.caseId !== caseId);
       if ((current.caseId && current.caseId !== caseId) || (current.messages.length && current.caseId !== caseId)) {

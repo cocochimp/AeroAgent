@@ -46,15 +46,25 @@ function renderFlow(events, pending) {
       el("section", null, el("h4", null, "输出"), event.output ? jsonBlock(event.output) : el("p", { class: "aa-muted" }, "本轮无数据")))))));
 }
 
+export function retrievalFunnel(result) {
+  if (Array.isArray(result?.funnel)) return result.funnel;
+  if (Array.isArray(result?.retrieval?.funnel)) return result.retrieval.funnel;
+  return [];
+}
+
+export function normalizeRetrievalResults(results = []) {
+  return results.map((result) => ({ ...result, funnel: retrievalFunnel(result) })).filter((result) => result.funnel.length);
+}
+
 export function renderRetrieval(results = [], { selected = 0, onSelect, highlight = null, onRule } = {}) {
-  const available = results.filter((result) => Array.isArray(result?.funnel) && result.funnel.length);
+  const available = normalizeRetrievalResults(results);
   if (!available.length) return stateView("empty", "本轮暂无检索数据", "完成包含票规检索的对话后显示各子诉求漏斗。 ");
   const currentIndex = Math.min(selected, available.length - 1);
   const current = available[currentIndex];
   const retrieval = current.retrieval || {};
   return el("div", { class: "aa-retrieval" },
     available.length > 1 ? el("div", { class: "aa-segmented", role: "group", "aria-label": "选择子诉求" }, available.map((result, index) =>
-      el("button", { type: "button", "aria-pressed": index === currentIndex, onclick: () => onSelect?.(index) },
+      el("button", { type: "button", "aria-pressed": String(index === currentIndex), onclick: () => onSelect?.(index) },
         INTENT[result.intent] || result.intent || `子诉求 ${index + 1}`))) : null,
     el("div", { class: "aa-retrieval-meta" }, el("span", { class: retrieval.degraded ? "aa-chip aa-chip-warning" : "aa-chip" },
       `${retrieval.backend || "hybrid"}${retrieval.degraded ? " · 降级" : ""}`),
@@ -163,7 +173,7 @@ export function createInspector(host) {
     update(nextRecord, trace) {
       record = nextRecord || null;
       events = trace || record?.result?.trace || [];
-      selectedSubrequest = Math.min(selectedSubrequest, Math.max(0, (record?.result?.results || []).length - 1));
+      selectedSubrequest = Math.min(selectedSubrequest, Math.max(0, normalizeRetrievalResults(record?.result?.results || []).length - 1));
       pending = "";
       draw();
     },
@@ -175,8 +185,8 @@ export function createInspector(host) {
     },
     reset() { record = null; events = []; pending = ""; highlight = null; selectedSubrequest = 0; draw(); },
     showRule(id) {
-      const results = record?.result?.results || [];
-      const index = results.findIndex((result) => (result.funnel || []).some((stage) => (stage.items || []).some((item) => item.id === id)));
+      const results = normalizeRetrievalResults(record?.result?.results || []);
+      const index = results.findIndex((result) => result.funnel.some((stage) => (stage.items || []).some((item) => item.id === id)));
       if (index >= 0) selectedSubrequest = index;
       highlight = id;
       activeTab = "retrieval";

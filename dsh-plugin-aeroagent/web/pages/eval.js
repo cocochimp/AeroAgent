@@ -28,6 +28,7 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
   let generation = 0;
   let pollGeneration = 0;
   let pollTimer = null;
+  let startingRun = false;
   const caseList = el("div", { class: "aa-eval-case-list" }, stateView("loading", "正在读取评测用例…"));
   const history = el("div", { class: "aa-run-history" }, stateView("loading", "正在读取运行历史…"));
   const result = el("section", { class: "aa-card aa-eval-result" }, stateView("empty", "尚无评测报告"));
@@ -57,8 +58,13 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
       el("button", { type: "button", class: "aa-text-button", onclick: () => { search.value = item.id; drawCases(); } }, "查看"))));
   }
 
+  function syncRunButton() {
+    runButton.disabled = startingRun || Boolean(activeRun && !terminal(activeRun.status));
+  }
+
   function renderRun(run) {
     activeRun = run;
+    syncRunButton();
     const report = run?.report || {};
     const summary = report.summary || {};
     const rows = report.results || [];
@@ -117,7 +123,7 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
         const run = await api.get(`/admin/evaluations?view=run&run_id=${encodeURIComponent(runId)}`, auth);
         if (!isCurrent() || own !== pollGeneration) return;
         renderRun(run);
-        if (terminal(run.status)) { runButton.disabled = false; await refreshRuns(); return; }
+        if (terminal(run.status)) { await refreshRuns(); return; }
       } catch (error) { if (!isAbort(error, signal)) setNotice(error.message, "error"); return; }
     }
   }
@@ -134,15 +140,22 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
   }
 
   async function runEvaluation() {
-    runButton.disabled = true;
+    if (startingRun || (activeRun && !terminal(activeRun.status))) return;
+    startingRun = true;
+    syncRunButton();
     try {
       if (!(await saveCases())) return;
       if (!currentCases().length) throw new Error("评测集为空");
       const started = await api.post("/admin/evaluations/runs", { mode, case_ids: selected.size ? [...selected] : null }, auth);
       if (!isCurrent()) return;
-      setNotice(`评测运行已排队：${started.run_id}`); await refreshRuns(); openRun(started.run_id);
+      activeRun = { ...started, mode, progress: started.progress || { completed: 0, total: currentCases().length }, report: started.report || {} };
+      renderRun(activeRun);
+      setNotice(`评测运行已排队：${started.run_id}`);
+      await refreshRuns();
+      if (!isCurrent()) return;
+      openRun(started.run_id);
     } catch (error) { setNotice(error.message, "error"); }
-    finally { if (isCurrent() && !activeRun?.status?.includes("QUEUED")) runButton.disabled = false; }
+    finally { startingRun = false; if (isCurrent()) syncRunButton(); }
   }
 
   file.addEventListener("change", () => {

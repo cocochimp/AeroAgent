@@ -19,5 +19,8 @@
     ".": "./index.js",
     "./client": "./client.js",
     "./package.json": "./package.json"
+  },
+  "devDependencies": {
+    "jsdom": "^27.4.0"
   }
 }

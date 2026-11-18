@@ -37,6 +37,16 @@ test("Listing deduplicates flight snapshots and preserves cancelled status", () 
   assert.equal(listing.find((flight) => flight.flight_no === "CA1").flight.status, "cancelled");
 });
 
+test("Listing cancellation survives either iteration order and a higher-fare cancelled snapshot", () => {
+  const scheduled = { ...orders[0], order_id: "CHEAP", fare: 700, flight: { ...orders[0].flight, status: "scheduled" } };
+  const cancelled = { ...orders[0], order_id: "EXPENSIVE", fare: 1400, flight: { ...orders[0].flight, status: "cancelled" } };
+  for (const snapshots of [[scheduled, cancelled], [cancelled, scheduled]]) {
+    const [flight] = buildFlightListing(snapshots);
+    assert.equal(flight.fare, 700);
+    assert.equal(flight.flight.status, "cancelled");
+  }
+});
+
 test("evaluation drafts reject duplicate IDs and require expected results", () => {
   const valid = [{ id: "case_1", question: "如何退票", expect: { outcome: "ANSWER" } }];
   assert.deepEqual(validateEvaluationCases(JSON.stringify(valid)), valid);

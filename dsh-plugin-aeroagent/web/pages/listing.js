@@ -6,8 +6,11 @@ export function buildFlightListing(orders) {
     if (!order.flight) continue;
     const key = [order.flight_no, order.date, order.flight.origin, order.flight.dest].join("|");
     const previous = flights.get(key);
-    if (!previous || (order.fare || 0) < (previous.fare || 0)) flights.set(key, { ...order });
-    if (previous?.flight?.status === "cancelled") flights.get(key).flight = { ...flights.get(key).flight, status: "cancelled" };
+    const selected = !previous || (order.fare || 0) < (previous.fare || 0) ? { ...order } : previous;
+    if (previous?.flight?.status === "cancelled" || order.flight.status === "cancelled") {
+      selected.flight = { ...selected.flight, status: "cancelled" };
+    }
+    flights.set(key, selected);
   }
   return [...flights.values()];
 }
