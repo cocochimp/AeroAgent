@@ -41,6 +41,53 @@ def test_deepseek_environment_supplies_key_base_url_and_model(monkeypatch):
     assert client.http.headers["Authorization"] == "Bearer sk-env-test"
 
 
+@pytest.mark.parametrize("method,args,provider_output", [
+    ("parse_intents", ("改到后天", {}, []), {"sub_queries": []}),
+    ("summarize", ([],), {"summary": "简短摘要"}),
+    ("write_scheme", (SchemeOutput(options=[], text=""), [], [], {}), {"text": "润色文本"}),
+    ("fact_check", ([], ""), {"unsupported": []}),
+])
+def test_every_json_capability_requests_a_valid_lowercase_json_object(method, args, provider_output):
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": json.dumps(provider_output, ensure_ascii=False)}}]})
+
+    client = DeepSeekClient(transport=httpx.MockTransport(handler), strict=True)
+    getattr(client, method)(*args)
+
+    assert len(requests) == 1
+    body = requests[0]
+    assert body["response_format"] == {"type": "json_object"}
+    system = body["messages"][0]["content"]
+    assert "Return a valid json object." in system
+    assert "json" in system
+
+
+def test_plain_chat_and_react_payloads_stay_out_of_json_mode():
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "plain"}}]})
+
+    client = DeepSeekClient(transport=httpx.MockTransport(handler), strict=True)
+    chat_messages = [{"role": "user", "content": "hello"}]
+    react_messages = [{"role": "user", "content": "plan"}]
+    client.chat(chat_messages)
+    client.react(react_messages)
+
+    assert len(requests) == 2
+    assert [body["messages"] for body in requests] == [chat_messages, react_messages]
+    assert all("response_format" not in body for body in requests)
+    assert all("Return a valid json object." not in message["content"]
+               for body in requests for message in body["messages"])
+
+
 @pytest.mark.parametrize("method,args", [
     ("parse_intents", ("改到后天", {}, [])),
     ("summarize", ([],)),

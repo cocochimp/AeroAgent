@@ -132,7 +132,9 @@ class DeepSeekClient:
         return message
 
     def _json(self, system, user) -> dict:
-        msg = self.chat([{"role": "system", "content": system}, {"role": "user", "content": user}], json_mode=True)
+        # DeepSeek 的 JSON mode 以大小写敏感方式要求提示词包含 lowercase json；业务提示保持原样。
+        json_system = f"Return a valid json object.\n{system}"
+        msg = self.chat([{"role": "system", "content": json_system}, {"role": "user", "content": user}], json_mode=True)
         content = msg.get("content")
         if not isinstance(content, str):
             raise _invalid_response("content 必须是字符串")
