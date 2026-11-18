@@ -148,7 +148,8 @@ def _request_identity(request: CompatRequest) -> tuple[str | None, str | None]:
     return order["user_id"], order_id
 
 
-_CASE_FENCE = re.compile(r"```aeroagent-case\s*(\{[\s\S]*?\})\s*```")
+_CASE_FENCE = re.compile(
+    r"```aeroagent-case\s*(\{[\s\S]*?\})\s*```|<!--\s*aeroagent-case\s*(\{[\s\S]*?\})\s*-->")
 
 
 def _latest_case_metadata(request: CompatRequest) -> dict:
@@ -160,7 +161,7 @@ def _latest_case_metadata(request: CompatRequest) -> dict:
         if not match:
             continue
         try:
-            payload = json.loads(match.group(1))
+            payload = json.loads(match.group(1) or match.group(2))
         except json.JSONDecodeError:
             continue
         case_id = payload.get("case_id")
@@ -175,9 +176,9 @@ def _latest_case_id(request: CompatRequest) -> str | None:
 
 
 def _case_fence(case_id: str, user_id: str | None = None) -> str:
-    """生成客户端隐藏、宿主下一轮原样回传的案件与用户标记。"""
+    """生成不可见、但宿主下一轮会原样回传的案件与用户标记。"""
     payload = {"case_id": case_id, **({"user_id": user_id} if user_id else {})}
-    return f"```aeroagent-case\n{json.dumps(payload)}\n```"
+    return f"<!--aeroagent-case {json.dumps(payload, ensure_ascii=False)} -->"
 
 
 def _quote_payload(quote, case_id: str) -> dict:
@@ -275,14 +276,39 @@ async def _run_servicing_case(message: str, case_id: str | None = None, *, mode=
     return out
 
 
+def _render_quote_section(quote: dict) -> str:
+    """把内部报价转换为乘客可读的方案区块，不暴露 JSON 或 quote_id。"""
+    action = "退票" if quote.get("action") == "REFUND" else "改签"
+    amount = quote.get("amount")
+    total_label = "预计退款" if action == "退票" else "应付合计"
+    currency = "¥" if quote.get("currency", "CNY") == "CNY" else f"{quote.get('currency')} "
+    target = quote.get("target") or {}
+    rows = []
+    if isinstance(target, dict) and target:
+        flight = " ".join(str(value) for value in (
+            target.get("flight_no"), target.get("date"), target.get("dep_time")) if value)
+        if flight:
+            rows.append(("改签目标", flight))
+    for item in quote.get("fee_items") or []:
+        if item.get("name"):
+            rows.append((str(item["name"]), f"{currency}{item.get('amount', 0)}"))
+    rows.append((total_label, f"{currency}{amount if amount is not None else '—'}"))
+    refs = quote.get("rule_refs") or []
+    if refs:
+        rows.append(("规则依据", "、".join(str(ref) for ref in refs)))
+    table = ["| 项目 | 内容 |", "| --- | --- |"]
+    table.extend(f"| {label} | {value} |" for label, value in rows)
+    return "\n".join([f"### {action}方案", *table,
+                      "", "> 方案由服务端运价引擎核对；确认办理功能将在后续接入。"])
+
+
 def _render_case_result(result: dict) -> str:
-    """渲染人类可读答复、结构化报价和用于多轮恢复的案件元数据。"""
+    """渲染乘客可读方案与不可见的案件恢复元数据。"""
     parts = []
     quotes = result.get("quotes") or ([result["quote"]] if result.get("quote") else [])
     if quotes:
-        parts.append("已生成可办理方案，请在下方确认卡操作。")
-        parts.extend(f"```aeroagent-quote\n{json.dumps(quote, ensure_ascii=False)}\n```"
-                     for quote in quotes)
+        parts.append("已生成可办理方案，请核对下列费用与依据。")
+        parts.extend(_render_quote_section(quote) for quote in quotes)
     elif "clarify" in result:
         question = result["clarify"].get("question") or json.dumps(result["clarify"], ensure_ascii=False)
         parts.append(f"待乘客补充：{question}")

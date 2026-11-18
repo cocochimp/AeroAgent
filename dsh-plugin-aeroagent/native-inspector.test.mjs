@@ -4,6 +4,7 @@ import "./client.js";
 
 const {
   fetchNativeCase,
+  fetchNativeLatestCase,
   nativeRetrievalResults,
   nativeFeeComparisons,
   nativeVerificationState,
@@ -22,6 +23,18 @@ test("loads an owned case through the existing authenticated case API", async ()
   await assert.rejects(fetchNativeCase({ caseId: "case_404", fetchImpl: async () => ({
     ok: false, status: 404, json: async () => ({ detail: { message: "案件不存在" } }),
   }) }), /案件不存在/);
+});
+
+test("falls back to the current user's latest case for native conversations", async () => {
+  let requested = "";
+  const latest = await fetchNativeLatestCase({ userId: "u_zhang", fetchImpl: async (url) => {
+    requested = url;
+    return { ok: true, status: 200, json: async () => ({ case_id: "case_latest", status: "PROPOSED" }) };
+  } });
+  assert.equal(requested, "http://127.0.0.1:8000/api/v1/cases/latest");
+  assert.equal(latest.case_id, "case_latest");
+  assert.equal(await fetchNativeLatestCase({ fetchImpl: async () => ({ ok: false, status: 404,
+    json: async () => ({ error: { message: "当前用户尚无案件" } }) }) }), null);
 });
 
 test("normalizes direct and nested retrieval funnels per subrequest", () => {

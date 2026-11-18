@@ -26,10 +26,13 @@ test("registers AeroAgent through native DSH slots instead of replacing the host
   globalThis.AeroAgentClient.nativeSlotsApply(ctx);
   assert.ok(calls.some((call) => call.name === "sidebar.brand.mark"));
   assert.ok(calls.some((call) => call.name === "sidebar.brand.name"));
-  for (const page of ["chat", "orders", "listing", "monitor"]) {
+  for (const page of ["orders", "listing", "monitor"]) {
     assert.ok(calls.some((call) => call.name === "sidebar.panellist" && call.id === `aeroagent-${page}`));
     assert.ok(calls.some((call) => call.name === "main" && call.key === `aeroagent-${page}`));
   }
+  assert.equal(calls.some((call) => call.name === "sidebar.panellist" && call.id === "aeroagent-chat"), false,
+    "conversation is opened through the workspace or New Session, not a duplicate business tab");
+  assert.ok(calls.some((call) => call.name === "sidebar.panellist.actions" && call.id === "aeroagent-default-pins"));
   assert.ok(calls.some((call) => call.type === "right-tab" && call.kind === "aeroagent-inspector"));
   assert.ok(calls.some((call) => call.name === "sidebar.right.pane.tab" && call.key === "dsh-plugin-aeroagent"));
   assert.ok(calls.some((call) => call.name === "conversation.session.header.utilities" && call.id === "aeroagent-execution-inspector"));

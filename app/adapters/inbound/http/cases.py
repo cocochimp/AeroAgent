@@ -103,6 +103,29 @@ async def create_case(request: CaseCreateRequest, principal: Principal = Depends
     return {"case_id": case_id, "status": "OPEN", "task_id": task_id}
 
 
+async def _case_payload(session, case: ServiceCaseRecord) -> dict:
+    """序列化案件和报价，供详情与当前用户最新案件共用。"""
+    quotes = await session.scalars(select(QuoteRecord).where(QuoteRecord.case_id == case.case_id)
+                                   .order_by(QuoteRecord.created_at))
+    return {"case_id": case.case_id, "order_id": case.order_id, "status": case.status,
+            "intent": case.intent, "created_at": case.created_at, "updated_at": case.updated_at,
+            "result": case.result, "quotes": [{"quote_id": q.quote_id, "action": q.action,
+            "amount": q.amount, "currency": q.currency, "status": q.status,
+            "expires_at": q.expires_at, "details": q.details} for q in quotes]}
+
+
+@router.get("/cases/latest")
+async def get_latest_case(principal: Principal = Depends(get_principal)):
+    """返回当前用户最近创建的案件；兼容原生 DSH 对话未携带本地案件 ID 的场景。"""
+    async with SessionFactory() as session:
+        case = await session.scalar(select(ServiceCaseRecord)
+                                    .where(ServiceCaseRecord.user_id == principal.user_id)
+                                    .order_by(ServiceCaseRecord.created_at.desc()).limit(1))
+        if case is None:
+            raise _http_error("NOT_FOUND", "当前用户尚无案件", 404)
+        return await _case_payload(session, case)
+
+
 @router.get("/cases/{case_id}")
 async def get_case(case_id: str, principal: Principal = Depends(get_principal)):
     """读取自有案件及按时间排序的报价；他人案件统一按不存在处理。"""
@@ -110,13 +133,7 @@ async def get_case(case_id: str, principal: Principal = Depends(get_principal)):
         case = await session.get(ServiceCaseRecord, case_id)
         if case is None or case.user_id != principal.user_id:
             raise _http_error("NOT_FOUND", "案件不存在", 404)
-        quotes = await session.scalars(select(QuoteRecord).where(QuoteRecord.case_id == case_id)
-                                       .order_by(QuoteRecord.created_at))
-        return {"case_id": case.case_id, "order_id": case.order_id, "status": case.status,
-                "intent": case.intent, "created_at": case.created_at, "updated_at": case.updated_at,
-                "result": case.result, "quotes": [{"quote_id": q.quote_id, "action": q.action,
-                "amount": q.amount, "currency": q.currency, "status": q.status,
-                "expires_at": q.expires_at, "details": q.details} for q in quotes]}
+        return await _case_payload(session, case)
 
 
 @router.post("/cases/{case_id}/messages", status_code=status.HTTP_202_ACCEPTED)

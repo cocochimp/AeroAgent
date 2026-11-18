@@ -127,7 +127,7 @@ def test_case_metadata_round_trips_through_assistant_history(monkeypatch):
         "status": "NEEDS_INFORMATION",
         "clarify": {"question": "想改到哪一天？"},
     })
-    assert "```aeroagent-case" in content
+    assert "<!--aeroagent-case" in content
     assert '"case_id": "case_abc"' in content
     request = openai_compat.CompatRequest(metadata={"user_id": "u_zhang"}, messages=[
         {"role": "user", "content": "改签"},
@@ -211,17 +211,21 @@ def test_structured_final_without_text_serializes_instead_of_failing():
     assert "case_human" in content
 
 
-def test_each_actionable_quote_has_its_own_fence():
+def test_actionable_quotes_render_as_readable_sections_without_raw_json():
     quote = {"quote_id": "q_1", "case_id": "case_abc", "order_id": "ORD1",
              "action": "REFUND", "amount": 400, "currency": "CNY",
              "expires_at": "2026-11-18T12:00:00Z", "fee_items": [],
              "rule_refs": ["R1"], "target": None}
     content = openai_compat._render_case_result({
         "case_id": "case_abc", "status": "WAITING_CONFIRMATION",
-        "quotes": [quote, {**quote, "quote_id": "q_2", "action": "CHANGE"}],
+        "quotes": [quote, {**quote, "quote_id": "q_2", "action": "CHANGE",
+                           "target": {"flight_no": "MU5101", "date": "2026-11-20", "dep_time": "07:00"}}],
     })
-    assert content.count("```aeroagent-quote") == 2
-    assert content.count("```aeroagent-case") == 1
+    assert content.count("### 退票方案") == 1
+    assert content.count("### 改签方案") == 1
+    assert "```aeroagent-quote" not in content
+    assert '"quote_id"' not in content
+    assert content.count("<!--aeroagent-case") == 1
 
 
 def test_deepseek_model_threads_real_mode_without_mutating_global_config(monkeypatch):

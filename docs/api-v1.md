@@ -1,6 +1,6 @@
 # FastAPI v1 接口
 
-当前 DDD 应用开放 **24 个 method/path**。接口按用途合并在既有资源路由中，未新增独立 Trace、评测运行详情或数据管理路径。
+当前 DDD 应用开放 **25 个 method/path**。接口按用途合并在既有资源路由中，未新增独立 Trace、评测运行详情或数据管理路径。
 
 | # | 方法 | 路径 | 用途 |
 |---:|---|---|---|
@@ -28,6 +28,7 @@
 | 22 | GET | `/api/v1/watches/alerts` | 读取当前用户的 DSH 站内提醒历史 |
 | 23 | POST | `/api/v1/watches/{watch_id}/evaluate` | 立即写入一次 `manual` 价格观测并评估阈值 |
 | 24 | GET | `/api/v1/watches/{watch_id}` | 读取自有监控及最近 50 条观测和提醒 |
+| 25 | GET | `/api/v1/cases/latest` | 读取当前用户最近创建的案件，供原生 DSH 会话观测使用 |
 
 ## 通用约定
 

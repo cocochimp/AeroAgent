@@ -173,6 +173,20 @@ const nativeExecutionTabs = Object.freeze([
   ["flow", "流程"], ["retrieval", "检索"], ["memory", "记忆"], ["verify", "校验"],
 ]);
 
+async function fetchNativeLatestCase({ backend = BACKEND, userId = "u_zhang", signal,
+  fetchImpl = globalThis.fetch } = {}) {
+  const response = await fetchImpl(`${String(backend).replace(/\/+$/, "")}/api/v1/cases/latest`, {
+    signal, headers: { Authorization: `Bearer demo:${userId}`, "Content-Type": "application/json" },
+  });
+  if (response.status === 404) return null;
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.detail?.message || payload?.error?.message || `案件加载失败 (${response.status})`);
+  }
+  if (!payload || typeof payload.case_id !== "string") throw new Error("案件响应格式不正确");
+  return payload;
+}
+
 async function fetchNativeCase({ backend = BACKEND, caseId, userId = "u_zhang", signal,
   fetchImpl = globalThis.fetch } = {}) {
   const response = await fetchImpl(`${String(backend).replace(/\/+$/, "")}/api/v1/cases/${encodeURIComponent(caseId)}`, {
@@ -466,8 +480,6 @@ function createNativeConversationStore({ storage = globalThis.localStorage } = {
 }
 
 const NATIVE_PAGES = [
-  { id: "chat", label: "退改对话", icon: "chat", order: -30,
-    description: "在 DSH 原生工作台中处理订单查询、退票与改签。" },
   { id: "orders", label: "我的订单", icon: "orders", order: -20,
     description: "在 DSH 原生主面板中查看和选择客票。" },
   { id: "listing", label: "Listing", icon: "search", order: -10,
@@ -490,6 +502,8 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
   const secondaryButton = { padding: "6px 11px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 7,
     background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-primary)",
     font: "inherit", fontSize: 12, cursor: "pointer" };
+  const orderContextBarFrame = { boxSizing: "border-box", width: "calc(100% - 32px)",
+    maxWidth: "var(--dsh-chat-content-width, 760px)", margin: "0 auto 8px" };
   const paths = {
     plane: ["M3 11.5 21 3l-6.5 18-3.2-7.3L3 11.5Z", "m11.3 13.7 4.2-4.2"],
     chat: ["M4 5.5h16v11H9l-5 4v-15Z", "M8 10h8M8 13h5"],
@@ -554,6 +568,13 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
     return h("div", { "data-aeroagent-footer": "", style: { boxSizing: "border-box", width: "100%",
       display: "grid", padding: "4px 7px 0" } }, NativeLearningNav(), NativeUserSwitcher());
   }
+  function NativeMoreMenuInitialization({ onPinnedChange } = {}) {
+    React.useEffect(() => {
+      onPinnedChange?.("plugins", false);
+      onPinnedChange?.("schedules", false);
+    }, []);
+    return null;
+  }
   const inspectorMuted = { color: "var(--dsw-alias-label-secondary)", fontSize: 11, lineHeight: 1.6 };
   const inspectorFaint = { color: "var(--dsw-alias-label-tertiary)", fontSize: 10, lineHeight: 1.5 };
   const inspectorSectionStyle = { padding: "14px 0", borderTop: "1px solid var(--dsw-alias-border-l1)" };
@@ -594,7 +615,6 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
     const [reload, setReload] = React.useState(0);
     const caseId = conversation.caseId;
     React.useEffect(() => {
-      if (!caseId) { setRecord(null); setPhase("idle"); setError(""); return undefined; }
       let active = true;
       let timer = null;
       let controller = null;
@@ -603,11 +623,19 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
         controller = new AbortController();
         setPhase((current) => current === "ready" ? "refreshing" : "loading");
         try {
-          const next = await fetchNativeCase({ caseId, userId, signal: controller.signal, fetchImpl });
+          const next = caseId
+            ? await fetchNativeCase({ caseId, userId, signal: controller.signal, fetchImpl })
+            : await fetchNativeLatestCase({ userId, signal: controller.signal, fetchImpl });
           if (!active) return;
+          if (!next) {
+            setRecord(null); setPhase("idle"); setError("");
+            timer = setTimeout(load, 2000);
+            return;
+          }
           setRecord(next);
           setPhase("ready");
           setError("");
+          if (!caseId) return;
           if (["OPEN", "PROCESSING"].includes(next.status)) timer = setTimeout(load, 1200);
         } catch (failure) {
           if (!active || failure?.name === "AbortError") return;
@@ -627,7 +655,7 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
     const comparisons = nativeFeeComparisons(result);
     const verification = nativeVerificationState(verify || {});
     let body;
-    if (!caseId) body = inspectorEmpty("尚未产生案件", "从退改对话完成一轮需求后，这里会显示真实流程、检索、记忆与校验。");
+    if (!record && phase === "idle") body = inspectorEmpty("尚未产生案件", "从退改对话完成一轮需求后，这里会显示真实流程、检索、记忆与校验。");
     else if (phase === "loading" && !record) body = inspectorEmpty("正在读取案件运行数据…");
     else if (phase === "error" && !record) body = h("div", { role: "alert", style: { padding: "24px 2px" } },
       h("strong", { style: { display: "block", color: "var(--dsw-alias-state-error-primary)", fontSize: 12 } }, "运行数据加载失败"),
@@ -1092,8 +1120,8 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
     const order = useSelectedOrder(userId);
     if (!order) {
       return h("section", { "data-aeroagent-order-context-bar": "empty", "aria-label": "AeroAgent 客票上下文条",
-        style: { boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "space-between",
-          gap: 12, marginBottom: 8, padding: "7px 10px", border: "1px solid var(--dsw-alias-border-l1)",
+        style: { ...orderContextBarFrame, display: "flex", alignItems: "center", justifyContent: "space-between",
+          gap: 12, padding: "7px 10px", border: "1px solid var(--dsw-alias-border-l1)",
           borderRadius: 8, background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-secondary)",
           fontSize: 12 } },
         h("span", null, `${user.name} · 尚未绑定退改客票`),
@@ -1103,7 +1131,7 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
     const flight = order.flight || {};
     const fill = (prompt) => inputActions?.setDraft?.(`@${order.order_id} ${prompt}`);
     return h("section", { "data-aeroagent-order-context-bar": order.order_id, "aria-label": "AeroAgent 客票上下文条",
-      style: { boxSizing: "border-box", marginBottom: 8, padding: "8px 10px", border: "1px solid var(--dsw-alias-border-l1)",
+      style: { ...orderContextBarFrame, padding: "7px 10px", border: "1px solid var(--dsw-alias-border-l1)",
         borderRadius: 8, background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-primary)",
         fontSize: 12 } },
       h("div", { style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 } },
@@ -1479,6 +1507,9 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
   ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
     name: "sidebar.footer.action", id: "aeroagent-footer", order: -20,
   }, NativeFooterNavigation));
+  ctx.slots.inject("sidebar.panellist.actions", () => ctx.slots.register({
+    name: "sidebar.panellist.actions", id: "aeroagent-default-pins", order: -100,
+  }, NativeMoreMenuInitialization));
   ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
     name: "conversation.input.dock", id: "aeroagent-order-context-bar", order: 10,
   }, NativeOrderContextBar));
@@ -1570,7 +1601,7 @@ const inject = ["slots", "layout", "sidebarRight", "sidebarRightTabs"];
 globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
   { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing,
     quoteStateAfter, followAction, traceEventKey, verificationView, quoteCardState, bootstrapDshUI, nativeSlotsApply,
-    fetchNativeOrders, createNativeOrderSelection, fetchNativeCase, nativeExecutionTabs, nativeRetrievalResults,
+    fetchNativeOrders, createNativeOrderSelection, fetchNativeCase, fetchNativeLatestCase, nativeExecutionTabs, nativeRetrievalResults,
     nativeFeeComparisons, nativeVerificationState, parseNativeCompletion, fetchNativeChat, createNativeConversationStore,
     nativeOrderBindingStatus, openNativeAeroConversation, NATIVE_DEMO_USERS, createNativeUserStore, createNativeWatchStore, scrollNativeChatToLatest,
     fetchNativeAdmin, fetchNativeRules, fetchNativeEvaluation, startNativeEvaluation, fetchNativeDemoData,
