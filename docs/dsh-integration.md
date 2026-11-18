@@ -1,16 +1,16 @@
 # DSH 接入指南（学员版）
 
-本文说明如何在本机把 AeroAgent 接入 DSH（DeepSeek Harness），并只在 DSH 内完成机票查询、退改报价、确认办理和业务学习。默认使用本地 `aeroagent-mock`，**不需要 DeepSeek 账号或 API Key，也不回退独立网页**。
+本文说明如何在本机把 AeroAgent 接入 DSH（DeepSeek Harness），并只在 DSH 内完成机票查询、退改报价、确认办理和业务学习。默认使用真实 DeepSeek（密钥只保存在后端环境），`aeroagent-mock` 仅用于离线回归，且不回退独立网页。
 
 > DSH 当前为 v0.1 预览版。请锁定 `@deepseek-ai/dsh@0.1.x`；网络受限时使用 `--offline` 或提前安装。AeroAgent 后端仍需单独启动，但学员的业务操作都在 DSH 中完成。
 
 ## 最终界面
 
-- **左上「业务办理」**：查询订单、改签报价、退票报价、退改对话。
+- **左上「业务办理」**：我的订单、Listing、低价监控、更多功能。
 - **左下「业务学习」**：评测、规则、数据，切换中间工作区，不离开 DSH。
-- **对话上方订单卡**：点击关联订单，后续快捷操作使用该订单。
-- **对话内报价卡**：费用明细、票规依据、「确认办理／暂不办理」。多个可办理方案分别成卡。
-- **右侧「执行观测」**：固定显示流程、检索、记忆、校验，以及案件和订单状态。
+- **对话上方客票上下文条**：绑定当前客票，快捷操作只填入输入框。
+- **对话内方案区块**：费用明细、票规依据；多个可办理方案分别成区块，不显示内部 JSON。
+- **右侧「执行观测」**：显示流程、检索、记忆、校验，以及案件和订单状态。
 
 ## ① 启动 AeroAgent 后端
 
@@ -73,13 +73,16 @@ npx --offline @deepseek-ai/dsh@0.1.x plugin --profile headless add /absolute/pat
         apiKeyEnv: AEROAGENT_STUB_KEY
         api: openai-completions
         baseURL: http://127.0.0.1:8000/v1
+        # 本机演示身份：宿主原生会话经此头声明演示用户，业务数据仍按该用户隔离
+        headers:
+          x-aeroagent-user: u_zhang
         models:
-          - id: aeroagent-mock
+          - id: aeroagent-deepseek
             input: [text]
 - id: agent-default-model
   config:
     provider: aeroagent
-    model: aeroagent-mock
+    model: aeroagent-deepseek
 ```
 
 启动 web：
@@ -95,8 +98,9 @@ DSH_HOME=/tmp/dsh-home AEROAGENT_STUB_KEY=dummy \
 
 - `GET /v1/models`
 - `POST /v1/chat/completions`，支持 SSE stream 和宿主 `tool_calls`。
-- 每个 AeroAgent 答复包含隐藏案件元数据，下一轮恢复原案件和会话，不会把追问误建成新案件。
-- 可办理报价使用 `aeroagent-quote` 结构返回，由客户端替换成卡片；其他宿主内容保持原样。
+- 每个 AeroAgent 答复包含不可见的案件元数据，下一轮恢复原案件和会话，不会把追问误建成新案件。
+- 可办理报价由后端渲染为乘客可读的方案区块，内部 `quote_id` 不出现在正文；明细同时保留在执行观测栏。
+- `headers.x-aeroagent-user` 由宿主注入，声明本机演示用户；选中客票时以后端订单归属为准，两者冲突会被拒绝。
 
 ## 学员操作与交易状态
 

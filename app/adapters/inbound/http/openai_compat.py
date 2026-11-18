@@ -118,8 +118,18 @@ def _parse_order_id(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _explicit_user_id(request: CompatRequest) -> str | None:
-    value = request.metadata.get("user_id") or request.user
+def _header_user_id(raw_request: Request) -> str | None:
+    """读取宿主为本机演示注入的身份头；缺失时保持匿名。"""
+    value = raw_request.headers.get("x-aeroagent-user")
+    if not value:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
+        raise HTTPException(400, detail={"code": "INVALID_USER", "message": "用户元数据无效"})
+    return value
+
+
+def _explicit_user_id(request: CompatRequest, header_user: str | None = None) -> str | None:
+    value = request.metadata.get("user_id") or request.user or header_user
     if value is None:
         return None
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
@@ -127,9 +137,9 @@ def _explicit_user_id(request: CompatRequest) -> str | None:
     return value
 
 
-def _request_identity(request: CompatRequest) -> tuple[str | None, str | None]:
+def _request_identity(request: CompatRequest, header_user: str | None = None) -> tuple[str | None, str | None]:
     """优先以选中订单的归属确定用户；显式身份与订单冲突时拒绝跨用户访问。"""
-    user_id = _explicit_user_id(request)
+    user_id = _explicit_user_id(request, header_user)
     order_id = (request.metadata.get("selected_order_id") or request.metadata.get("order_id")
                 or _parse_order_id(_last_user(request)))
     if order_id is not None and not isinstance(order_id, str):
@@ -149,7 +159,9 @@ def _request_identity(request: CompatRequest) -> tuple[str | None, str | None]:
 
 
 _CASE_FENCE = re.compile(
-    r"```aeroagent-case\s*(\{[\s\S]*?\})\s*```|<!--\s*aeroagent-case\s*(\{[\s\S]*?\})\s*-->")
+    r"```aeroagent-case\s*(\{[\s\S]*?\})\s*```|<!--\s*aeroagent-case\s*(\{[\s\S]*?\})\s*-->"
+    r"|^\[aeroagent-case\]:\s*#\s*\"case_id=([A-Za-z0-9_]+)(?:\s+user=([A-Za-z0-9_-]+))?\"\s*$",
+    re.MULTILINE)
 
 
 def _latest_case_metadata(request: CompatRequest) -> dict:
@@ -160,6 +172,8 @@ def _latest_case_metadata(request: CompatRequest) -> dict:
         match = _CASE_FENCE.search(message.content)
         if not match:
             continue
+        if match.group(3):
+            return {"case_id": match.group(3), "user_id": match.group(4)}
         try:
             payload = json.loads(match.group(1) or match.group(2))
         except json.JSONDecodeError:
@@ -176,9 +190,13 @@ def _latest_case_id(request: CompatRequest) -> str | None:
 
 
 def _case_fence(case_id: str, user_id: str | None = None) -> str:
-    """生成不可见、但宿主下一轮会原样回传的案件与用户标记。"""
-    payload = {"case_id": case_id, **({"user_id": user_id} if user_id else {})}
-    return f"<!--aeroagent-case {json.dumps(payload, ensure_ascii=False)} -->"
+    """生成不可见、但宿主下一轮会原样回传的案件与用户标记。
+
+    Markdown link-reference definition：渲染时完全隐藏，原始 Markdown 仍留在会话历史里，
+    因此不会像 HTML 注释那样在宿主正文中露出内部字段。
+    """
+    title = f"case_id={case_id}" + (f" user={user_id}" if user_id else "")
+    return f'[aeroagent-case]: # "{title}"'
 
 
 def _quote_payload(quote, case_id: str) -> dict:
@@ -318,7 +336,7 @@ def _render_case_result(result: dict) -> str:
                      if isinstance(final, dict) else str(final))
     if result.get("case_id"):
         parts.append(_case_fence(result["case_id"], result.get("user_id")))
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] | None]:
@@ -354,10 +372,11 @@ async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] |
     return _render_case_result(result), None
 
 
-def _throttle(raw_request: Request, request: CompatRequest) -> None:
+def _throttle(raw_request: Request, request: CompatRequest,
+              header_user: str | None = None) -> None:
     """按用户隔离一分钟滑动窗口；匿名流量仅按客户端地址共享限额。"""
     # 与业务处理使用同一身份解析；案件 fence 不是可认证的用户凭证。
-    user_id = None if _is_title_request(request) else _request_identity(request)[0]
+    user_id = None if _is_title_request(request) else _request_identity(request, header_user)[0]
     host = raw_request.client.host if raw_request.client else "unknown"
     key = f"user:{user_id}" if user_id else f"host:{host}"
     now = time.monotonic()
@@ -390,6 +409,9 @@ async def list_models():
 async def chat_completions(request: CompatRequest, raw_request: Request):
     """OpenAI chat/completions 兼容入口；stream 时按 SSE 分片返回。"""
     _mode_for_model(request.model)
+    header_user = _header_user_id(raw_request)
+    if header_user and not request.user and not request.metadata.get("user_id"):
+        request.user = header_user
     _throttle(raw_request, request)
     try:
         content, tool_calls = await _completion_content(request)

@@ -47,6 +47,7 @@ function nativeContext(calls) {
 const React = {
   createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
   useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+  useEffect: () => {},
 };
 
 test("provides the four approved demo profiles in switcher order", () => {

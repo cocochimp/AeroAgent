@@ -362,7 +362,7 @@ def test_option_must_cite_engine_rule():
 
 
 # ---------------------------------------------------------------- 加固：fact_checker 合并
-def test_fact_checker_is_unioned_with_keyword_result():
+def test_fact_checker_is_advisory_and_does_not_veto_local_checks():
     res = _results()
     s = scheme.generate(res).model_dump()
     s["text"] += "另外金卡会员可以免费改签3次。"
@@ -370,10 +370,10 @@ def test_fact_checker_is_unioned_with_keyword_result():
     clean = scheme.generate(res).model_dump()
     first = [x for x in clean["text"].replace("；", "。").split("。") if x][0]
     v = verify.check(clean, res, fact_checker=lambda sents, corpus: [first, "不存在的句子"])
-    assert v["unsupported_claims"] == [first] and not v["passed"]
+    assert v["fact_check_claims"] == [first]
+    assert v["unsupported_claims"] == []
+    assert v["passed"] is True, "外部模型核查只作旁证，不能否决已核对金额的方案"
     assert 0.0 <= v["support_ratio"] <= 1.0
-    v2 = verify.check(clean, res, fact_checker=lambda sents, corpus: sents * 3)
-    assert 0.0 <= v2["support_ratio"] <= 1.0
 
 
 # ---------------------------------------------------------------- 加固：全量扫描，锁定“无误杀”

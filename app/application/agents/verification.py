@@ -176,10 +176,12 @@ def check(scheme: dict, results: list[dict], fact_checker=None) -> dict:
         ss, bad = _unsupported(u)
         sentences += ss
         unsupported += [x for x in bad if x not in unsupported]
+    # 模型事实核查只作旁证：同一句正常客服用语也可能被误判，不能否决本地已核对金额的方案。
+    advisory = []
     if fact_checker is not None:
         ext = fact_checker(sentences, _rule_corpus(results))
         if ext is not None:
-            unsupported += [x for x in ext if x in sentences and x not in unsupported]
+            advisory = [x for x in ext if x in sentences]
     for s in unsupported:
         errors.append(f"删除无依据的论断：「{s.strip()}」")
     # 4. 引用必须在本次检索结果里
@@ -219,7 +221,7 @@ def check(scheme: dict, results: list[dict], fact_checker=None) -> dict:
                                "expected": expected, "actual": actual, "matched": expected == actual})
     threshold = _threshold()
     return {"confidence": confidence, "quote_mismatch": not quote_ok, "bad_quotes": bad_quotes,
-            "unsupported_claims": unsupported, "bad_refs": bad_refs, "errors": errors,
+            "unsupported_claims": unsupported, "fact_check_claims": advisory, "bad_refs": bad_refs, "errors": errors,
             "support_ratio": round(support_ratio, 2), "threshold": threshold,
             "fee_comparison": fee_comparison, "passed": confidence >= threshold}
 

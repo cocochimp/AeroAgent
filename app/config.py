@@ -20,7 +20,7 @@ DEFAULTS = {
             "timeout": 30, "max_calls_per_turn": 24},
     "compat": {"requests_per_minute": 60},
     "query": {"clarify_threshold": 0.6, "step_back_min_hits": 2},
-    "planner": {"max_rounds": 5, "max_tool_retries": 1},
+    "planner": {"max_rounds": 8, "max_tool_retries": 1},
     "retrieval": {"backend": os.environ.get("AIR_RETRIEVAL", "hybrid"),   # hybrid | fallback
                   "k_recall": 60, "k_fuse": 40, "k_rerank": 10, "k_mmr": 5, "k_inject": 3,
                   "rrf_k": 60, "rerank_min": 0.6, "mmr_lambda": 0.7, "profile_boost": 0.1,

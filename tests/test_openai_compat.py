@@ -28,6 +28,25 @@ def test_models_list_exposes_both_decision_tiers(client):
     assert ids == ["aeroagent-mock", "aeroagent-deepseek"]
 
 
+def test_host_identity_header_authorises_order_intent(client):
+    """本机演示宿主可注入身份头；缺失时仍要求显式用户。"""
+    body = {
+        "model": "aeroagent-mock",
+        "messages": [{"role": "user", "content": "查询张三的订单列表"}],
+        "tools": [{"type": "function", "function": {"name": "aeroagent_list_orders"}}],
+    }
+    response = client.post("/v1/chat/completions", json=body,
+                           headers={"x-aeroagent-user": "u_zhang"})
+    assert response.status_code == 200
+    call = response.json()["choices"][0]["message"]["tool_calls"][0]
+    assert json.loads(call["function"]["arguments"]) == {"user_id": "u_zhang"}
+
+    rejected = client.post("/v1/chat/completions", json=body,
+                           headers={"x-aeroagent-user": "bad user!"})
+    assert rejected.status_code == 400
+    assert rejected.json()["error"]["code"] == "INVALID_USER"
+
+
 def test_mock_tier_delegates_order_intent_to_host_tool(client):
     response = client.post("/v1/chat/completions", json={
         "model": "aeroagent-mock",
@@ -127,8 +146,7 @@ def test_case_metadata_round_trips_through_assistant_history(monkeypatch):
         "status": "NEEDS_INFORMATION",
         "clarify": {"question": "想改到哪一天？"},
     })
-    assert "<!--aeroagent-case" in content
-    assert '"case_id": "case_abc"' in content
+    assert "[aeroagent-case]: # \"case_id=case_abc\"" in content
     request = openai_compat.CompatRequest(metadata={"user_id": "u_zhang"}, messages=[
         {"role": "user", "content": "改签"},
         {"role": "assistant", "content": content},
@@ -225,7 +243,7 @@ def test_actionable_quotes_render_as_readable_sections_without_raw_json():
     assert content.count("### 改签方案") == 1
     assert "```aeroagent-quote" not in content
     assert '"quote_id"' not in content
-    assert content.count("<!--aeroagent-case") == 1
+    assert content.count("[aeroagent-case]: #") == 1
 
 
 def test_deepseek_model_threads_real_mode_without_mutating_global_config(monkeypatch):
@@ -379,7 +397,7 @@ def test_host_metadata_only_turn_is_local_only(monkeypatch):
 def test_case_metadata_carries_user_identity_across_turns(monkeypatch):
     rendered = openai_compat._render_case_result({
         "case_id": "case_li", "user_id": "u_li", "status": "PROPOSED", "final": "继续"})
-    assert '"user_id": "u_li"' in rendered
+    assert "user=u_li" in rendered
     calls = []
 
     async def fake_run(message, case_id=None, **kwargs):
