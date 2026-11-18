@@ -173,11 +173,14 @@ class DeepSeekClient:
             return self._optional_failure(exc, "方案润色响应 Schema 校验失败")
 
     def fact_check(self, sentences, corpus):
-        """用模型辅助发现无规则依据的句子；失败时不阻断本地确定性校验。"""
+        """核查句子依据；缺少 unsupported 明确表示空结果，null/非字符串数组均为响应错误。"""
         try:
             out = self._json("判断每句话能否在规则原文中找到依据。输出 {\"unsupported\": [\"无依据的句子\"]}",
                              f"规则原文：{corpus}\n句子：{json.dumps(sentences, ensure_ascii=False)}")
-            return [s for s in out.get("unsupported", []) if s in sentences]
+            unsupported = out.get("unsupported", [])
+            if not isinstance(unsupported, list) or any(not isinstance(item, str) for item in unsupported):
+                raise _invalid_response("unsupported 必须是字符串数组（可省略，但不能为 null）")
+            return [sentence for sentence in unsupported if sentence in sentences]
         except LLMError as exc:
             return self._optional_failure(exc, "事实核查失败")
 

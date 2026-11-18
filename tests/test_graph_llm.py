@@ -1,6 +1,7 @@
 import pytest
 from app.adapters.outbound.sqlite import data
 from app.application.agents import llm, orchestrator as graph
+from app.application.agents.models import SubQuery
 
 D = "20260926"
 O1 = f"ORD{D}001"
@@ -31,6 +32,20 @@ class NoPaidLLM(llm.FakeLLM):
     def react(self, *args, **kwargs):
         self.calls.append("react")
         return act("finish")
+
+
+class InventedDateLLM(NoPaidLLM):
+    def __init__(self, target_date):
+        super().__init__()
+        self.target_date = target_date
+
+    def parse_intents(self, *args):
+        self.calls.append("parse_intents")
+        return [SubQuery(intent="CHANGE", text="改到后天", target_date=self.target_date)]
+
+    def react(self, *args, **kwargs):
+        self.calls.append("react")
+        return act("tool_recalc_fee", FEE(self.target_date))
 
 
 def test_schema_error_feedback_then_success():
@@ -103,4 +118,26 @@ def test_forced_past_iso_clarifies_before_paid_model_or_tool_calls_on_resume():
     assert res["interrupt"]["kind"] == "clarify"
     assert res["interrupt"]["field"] == "target_date"
     assert no_paid.calls == []
+    assert not [e for e in res["trace"] if e["node"] in {"agent_node", "tool_exec"}]
+
+
+@pytest.mark.parametrize("target_date", ["2026-09-26", "2026-09-25"])
+def test_provider_invented_rejected_date_clarifies_before_react_or_tools(monkeypatch, target_date):
+    fake = InventedDateLLM(target_date)
+    tool_calls = []
+
+    def spy_tool(*args):
+        tool_calls.append(args)
+        return {"ok": False, "kind": "ENGINE", "error": {"code": "STOP", "message": "stop"}}
+
+    monkeypatch.setattr(graph.tools, "run_tool", spy_tool)
+
+    # 原始输入是未来的“后天”；过去/今天日期只由模型返回，模拟模型编造。
+    res = graph.run_turn(f"invented-{target_date}", "u_zhang", "改到后天",
+                         order_id=O1, mode="deepseek", client=fake)
+
+    assert res["interrupt"]["kind"] == "clarify"
+    assert res["interrupt"]["field"] == "target_date"
+    assert fake.calls == ["parse_intents"]
+    assert tool_calls == []
     assert not [e for e in res["trace"] if e["node"] in {"agent_node", "tool_exec"}]

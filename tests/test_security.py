@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import threading
 from types import SimpleNamespace
 
@@ -73,6 +74,27 @@ def test_malformed_provider_payloads_become_retryable_llm_errors(payload):
     assert caught.value.retryable is True
 
 
+@pytest.mark.parametrize("target_date", ["2026-09-26", "2026-09-25"])
+def test_parse_intents_rejected_provider_iso_clarifies_in_understanding(target_date):
+    from app.adapters.outbound.sqlite import data
+    from app.application.agents import understanding
+
+    data.init(force=True)
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    content = json.dumps({"sub_queries": [
+        {"intent": "CHANGE", "text": "改到后天", "target_date": target_date}]})
+    client = DeepSeekClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+        200, json={"choices": [{"message": {"content": content}}]})), strict=True)
+
+    parsed = understanding.understand("改到后天", {
+        "user_id": "u_zhang", "selected_order_id": "ORD20260926001",
+        "order_stack": [], "last_intent": None,
+    }, llm=client)
+
+    assert parsed.sub_queries[0].target_date is None
+    assert parsed.clarify["field"] == "target_date"
+
+
 def test_strict_summarize_rejects_missing_summary():
     S.update({"llm": {"api_key": "sk-test-000000"}})
     client = DeepSeekClient(transport=httpx.MockTransport(lambda request: httpx.Response(
@@ -83,6 +105,28 @@ def test_strict_summarize_rejects_missing_summary():
 
     assert caught.value.code == "LLM_RESPONSE_INVALID"
     assert caught.value.retryable is True
+
+
+@pytest.mark.parametrize("unsupported", [None, "a", {}, [None], [{"text": "a"}], [1]])
+def test_strict_fact_check_rejects_malformed_unsupported_values(unsupported):
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    content = json.dumps({"unsupported": unsupported})
+    client = DeepSeekClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+        200, json={"choices": [{"message": {"content": content}}]})), strict=True)
+
+    with pytest.raises(LLMError) as caught:
+        client.fact_check(["a"], "规则")
+
+    assert caught.value.code == "LLM_RESPONSE_INVALID"
+    assert caught.value.retryable is True
+
+
+def test_fact_check_allows_missing_optional_unsupported_but_not_null():
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    client = DeepSeekClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+        200, json={"choices": [{"message": {"content": "{}"}}]})), strict=True)
+
+    assert client.fact_check(["a"], "规则") == []
 
 
 def test_strict_decision_preserves_original_error_code_and_retryable_flag():

@@ -108,6 +108,14 @@ def _has_rejected_iso_date(text: str) -> bool:
     return False
 
 
+def normalize_provider_date(value: str) -> str | None:
+    """模型返回日期也须通过同一上海严格未来校验；被拒绝的 ISO 不得回退为原文。"""
+    text = str(value)
+    if _has_rejected_iso_date(text):
+        return None
+    return resolve_date(text) or text
+
+
 def find_date(text: str):
     """返回 (标准日期 | 原始模糊短语 | None)；过去/今天的 ISO 日期不得作为原文重新注入。"""
     m = re.search(DATE_PHRASE, text)
@@ -243,8 +251,16 @@ def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
     forced_raw = ctx.get("forced_date")
     rejected_iso = _has_rejected_iso_date(question) or bool(
         forced_raw and _has_rejected_iso_date(str(forced_raw)))
+    provider_date_rejected = False
     if llm is not None and not rejected_iso:
-        subs = llm.parse_intents(question, ctx, subs) or subs
+        provider_subs = llm.parse_intents(question, ctx, subs)
+        if provider_subs:
+            subs = provider_subs
+            for sub in subs:
+                if sub.target_date:
+                    normalized = normalize_provider_date(sub.target_date)
+                    provider_date_rejected = provider_date_rejected or normalized is None
+                    sub.target_date = normalized
     if not subs:
         # 只有省略式追问（「那大后天呢」「那退票呢」这类短句）才继承上一轮意图；无关问题不继承
         ellipsis = bool(re.match(r"^\s*(那|那么|还有|再|如果)", question)) or bool(re.search(r"呢[？?]?\s*$", question))
@@ -258,7 +274,10 @@ def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
         forced_date = resolve_date(str(forced_raw)) or str(forced_raw)
     for s in subs:   # 被拒绝的 ISO 追问值保持缺失并直接追问；其他模糊原文仍留给 Schema 纠错
         if s.intent == "CHANGE":
-            s.target_date = forced_date if has_forced_date else (s.target_date or find_date(question))
+            if has_forced_date:
+                s.target_date = forced_date
+            elif not provider_date_rejected:
+                s.target_date = s.target_date or find_date(question)
 
     p = ParsedQuery(intents=[s.intent for s in subs], sub_queries=subs)
     oid = resolve_order(question, ctx)
