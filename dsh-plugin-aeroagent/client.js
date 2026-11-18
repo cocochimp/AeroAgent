@@ -169,6 +169,69 @@ function createNativeWatchStore({ storage = globalThis.localStorage } = {}) {
   return { get, replace, subscribe };
 }
 
+const nativeExecutionTabs = Object.freeze([
+  ["flow", "流程"], ["retrieval", "检索"], ["memory", "记忆"], ["verify", "校验"],
+]);
+
+async function fetchNativeCase({ backend = BACKEND, caseId, userId = "u_zhang", signal,
+  fetchImpl = globalThis.fetch } = {}) {
+  const response = await fetchImpl(`${String(backend).replace(/\/+$/, "")}/api/v1/cases/${encodeURIComponent(caseId)}`, {
+    signal, headers: { Authorization: `Bearer demo:${userId}`, "Content-Type": "application/json" },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.detail?.message || payload?.error?.message ||
+      (typeof payload?.detail === "string" ? payload.detail : `案件加载失败 (${response.status})`);
+    throw new Error(message);
+  }
+  if (!payload || typeof payload.case_id !== "string") throw new Error("案件响应格式不正确");
+  return payload;
+}
+
+function nativeRetrievalResults(results = []) {
+  return (Array.isArray(results) ? results : []).map((result) => ({
+    ...result,
+    funnel: Array.isArray(result?.funnel) ? result.funnel
+      : Array.isArray(result?.retrieval?.funnel) ? result.retrieval.funnel : [],
+  })).filter((result) => result.funnel.length);
+}
+
+function nativeFeeComparisons(result = {}) {
+  const explicit = result?.verify?.fee_comparison;
+  if (Array.isArray(explicit) && explicit.length) return explicit.map((row) => ({
+    label: row.label || row.intent || "方案合计",
+    actual: row.actual,
+    expected: row.expected,
+    matched: typeof row.actual === "number" && typeof row.expected === "number"
+      ? row.actual === row.expected : null,
+  }));
+  const rows = [];
+  (result?.final?.options || []).forEach((option, index) => {
+    const fee = result?.results?.[index]?.fee;
+    if (!fee || fee.allowed === false || !["CHANGE", "REFUND"].includes(option.type)) return;
+    const engine = { "改期费": fee.change_fee, "票面差价": fee.fare_diff,
+      "退票费": fee.refund_fee, "机场建设费退还": fee.tax };
+    for (const item of option.fee_items || []) rows.push({
+      label: `${option.type === "REFUND" ? "退票" : "改签"} · ${item.name}`,
+      actual: item.amount,
+      expected: engine[item.name],
+      matched: typeof item.amount === "number" && typeof engine[item.name] === "number"
+        ? item.amount === engine[item.name] : null,
+    });
+    const expected = option.type === "CHANGE" ? fee.total : fee.refund_amount;
+    rows.push({ label: `${option.type === "REFUND" ? "退票" : "改签"} · 合计`, actual: option.total,
+      expected, matched: typeof option.total === "number" && typeof expected === "number"
+        ? option.total === expected : null });
+  });
+  return rows;
+}
+
+function nativeVerificationState(verify = {}) {
+  if (verify?.passed === true) return { kind: "success", label: "校验通过" };
+  if (verify?.passed === false) return { kind: "failure", label: "未通过校验" };
+  return { kind: "pending", label: "暂无校验结果" };
+}
+
 async function fetchNativeOrders({ backend = BACKEND, userId = "u_zhang", signal,
   fetchImpl = globalThis.fetch } = {}) {
   const response = await fetchImpl(`${String(backend).replace(/\/+$/, "")}/api/v1/orders`, {
@@ -491,17 +554,277 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
     return h("div", { "data-aeroagent-footer": "", style: { boxSizing: "border-box", width: "100%",
       display: "grid", padding: "4px 7px 0" } }, NativeLearningNav(), NativeUserSwitcher());
   }
+  const inspectorMuted = { color: "var(--dsw-alias-label-secondary)", fontSize: 11, lineHeight: 1.6 };
+  const inspectorFaint = { color: "var(--dsw-alias-label-tertiary)", fontSize: 10, lineHeight: 1.5 };
+  const inspectorSectionStyle = { padding: "14px 0", borderTop: "1px solid var(--dsw-alias-border-l1)" };
+  const inspectorChipStyle = { display: "inline-flex", alignItems: "center", padding: "2px 6px",
+    border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 4, color: "var(--dsw-alias-label-secondary)",
+    fontSize: 10, lineHeight: 1.5 };
+  const inspectorNodeLabels = { user_input: "接收诉求", memory_node: "加载记忆", order_align: "对齐订单",
+    query_understand: "理解诉求", clarify: "追问乘客", agent_node: "决策下一步", schema_validate: "校验工具参数",
+    checkpoint_gate: "规则门禁", tool_exec: "执行只读工具", step_back: "检索改写", sub_done: "完成子诉求",
+    tool_scheme_gen: "生成退改方案", verify_node: "校验方案", retry_node: "自我修正", human_review: "转人工",
+    finish: "结束本轮" };
+  function inspectorJson(value) {
+    return h("pre", { style: { boxSizing: "border-box", width: "100%", maxHeight: 180, overflow: "auto",
+      margin: "5px 0 0", padding: 8, border: "1px solid var(--dsw-alias-border-l1)", borderRadius: 6,
+      background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-secondary)",
+      font: "10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace", whiteSpace: "pre-wrap",
+      overflowWrap: "anywhere" } }, JSON.stringify(value ?? {}, null, 2));
+  }
+  function inspectorEmpty(title, detail) {
+    return h("div", { style: { padding: "28px 4px", textAlign: "center" } },
+      h("strong", { style: { display: "block", color: "var(--dsw-alias-label-primary)", fontSize: 13 } }, title),
+      detail ? h("p", { style: { ...inspectorMuted, maxWidth: "34ch", margin: "6px auto 0" } }, detail) : null);
+  }
+  function inspectorSection(title, ...children) {
+    return h("section", { style: inspectorSectionStyle },
+      h("h3", { style: { margin: "0 0 9px", color: "var(--dsw-alias-label-primary)", fontSize: 12,
+        fontWeight: 600 } }, title), ...children);
+  }
   function NativeExecutionInspector() {
-    const row = (label) => h("div", { key: label, style: { display: "flex", justifyContent: "space-between",
-      gap: 16, padding: "12px 0", borderBottom: "1px solid var(--dsw-alias-border-l1)", fontSize: 13 } },
-      h("span", null, label), h("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontSize: 12 } }, "等待数据"));
+    const { userId } = useNativeUser();
+    const conversation = useConversation(userId);
+    const [tab, setTab] = React.useState("flow");
+    const [selectedSubrequest, setSelectedSubrequest] = React.useState(0);
+    const [highlight, setHighlight] = React.useState(null);
+    const [record, setRecord] = React.useState(null);
+    const [phase, setPhase] = React.useState(conversation.caseId ? "loading" : "idle");
+    const [error, setError] = React.useState("");
+    const [reload, setReload] = React.useState(0);
+    const caseId = conversation.caseId;
+    React.useEffect(() => {
+      if (!caseId) { setRecord(null); setPhase("idle"); setError(""); return undefined; }
+      let active = true;
+      let timer = null;
+      let controller = null;
+      async function load() {
+        controller?.abort();
+        controller = new AbortController();
+        setPhase((current) => current === "ready" ? "refreshing" : "loading");
+        try {
+          const next = await fetchNativeCase({ caseId, userId, signal: controller.signal, fetchImpl });
+          if (!active) return;
+          setRecord(next);
+          setPhase("ready");
+          setError("");
+          if (["OPEN", "PROCESSING"].includes(next.status)) timer = setTimeout(load, 1200);
+        } catch (failure) {
+          if (!active || failure?.name === "AbortError") return;
+          setPhase("error");
+          setError(failure.message);
+        }
+      }
+      load();
+      return () => { active = false; if (timer) clearTimeout(timer); controller?.abort(); };
+    }, [caseId, userId, reload]);
+    const result = record?.result || {};
+    const events = Array.isArray(result.trace) ? result.trace : [];
+    const retrievalResults = nativeRetrievalResults(result.results || []);
+    const context = result.context || {};
+    const memory = result.memory || {};
+    const verify = result.verify || result.final?.verify || null;
+    const comparisons = nativeFeeComparisons(result);
+    const verification = nativeVerificationState(verify || {});
+    let body;
+    if (!caseId) body = inspectorEmpty("尚未产生案件", "从退改对话完成一轮需求后，这里会显示真实流程、检索、记忆与校验。");
+    else if (phase === "loading" && !record) body = inspectorEmpty("正在读取案件运行数据…");
+    else if (phase === "error" && !record) body = h("div", { role: "alert", style: { padding: "24px 2px" } },
+      h("strong", { style: { display: "block", color: "var(--dsw-alias-state-error-primary)", fontSize: 12 } }, "运行数据加载失败"),
+      h("p", { style: inspectorMuted }, error),
+      h("button", { type: "button", onClick: () => setReload((value) => value + 1), style: secondaryButton }, "重试"));
+    else if (tab === "flow") {
+      body = events.length ? h("ol", { style: { listStyle: "none", margin: 0, padding: 0 } },
+        events.map((event, index) => h("li", { key: `${event.node || "event"}-${index}`, style: { position: "relative",
+          marginLeft: 3, padding: "0 0 2px 14px", borderLeft: "1px solid var(--dsw-alias-border-l2)" } },
+          h("span", { "aria-hidden": "true", style: { position: "absolute", left: -3, top: 8, width: 5, height: 5,
+            borderRadius: "50%", background: event.status === "error" ? "var(--dsw-alias-state-error-primary)"
+              : "var(--dsw-alias-state-success-primary)" } }),
+          h("details", { style: { padding: "3px 0 9px" } },
+            h("summary", { style: { display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" } },
+              h("span", { style: { flex: 1, minWidth: 0 } },
+                h("strong", { style: { display: "block", fontSize: 12 } }, inspectorNodeLabels[event.node] ||
+                  event.node || `Agent 节点 ${index + 1}`),
+                h("small", { style: { display: "block", marginTop: 2, color: "var(--dsw-alias-label-secondary)",
+                  fontSize: 10 } }, event.note || event.status || "—")),
+              h("time", { style: inspectorFaint }, typeof event.ms === "number" ? `${event.ms} ms` : "耗时无数据")),
+            h("div", { style: { display: "grid", gap: 8, marginTop: 7 } },
+              h("div", null, h("h4", { style: { margin: 0, ...inspectorFaint } }, "输入"),
+                event.input ? inspectorJson(event.input) : h("p", { style: inspectorFaint }, "本轮无数据")),
+              h("div", null, h("h4", { style: { margin: 0, ...inspectorFaint } }, "输出"),
+                event.output ? inspectorJson(event.output) : h("p", { style: inspectorFaint }, "本轮无数据")))))))
+        : inspectorEmpty("本轮暂无流程轨迹", "发起退改对话后，这里展示按时间排列的 Agent 节点。");
+    } else if (tab === "retrieval") {
+      if (!retrievalResults.length) body = inspectorEmpty("本轮暂无检索数据", "完成包含票规检索的对话后，这里显示每个子诉求的召回与精排漏斗。");
+      else {
+        const currentIndex = Math.min(selectedSubrequest, retrievalResults.length - 1);
+        const current = retrievalResults[currentIndex];
+        const retrieval = current.retrieval || {};
+        const meta = [retrieval.backend ? `${retrieval.backend}${retrieval.degraded ? " · 降级" : ""}` : null,
+          current.rewrite?.type ? `改写：${current.rewrite.type}` : null].filter(Boolean);
+        body = h("div", null,
+          retrievalResults.length > 1 ? h("div", { role: "group", "aria-label": "选择子诉求",
+            style: { display: "flex", gap: 5, marginBottom: 10 } }, retrievalResults.map((item, index) =>
+            h("button", { key: `${item.intent}-${index}`, type: "button", "aria-pressed": index === currentIndex,
+              onClick: () => { setSelectedSubrequest(index); setHighlight(null); },
+              style: { flex: 1, padding: "5px 4px", border: "1px solid var(--dsw-alias-border-l1)", borderRadius: 5,
+                background: index === currentIndex ? "var(--dsw-alias-interactive-bg-active)" : "transparent",
+                color: index === currentIndex ? "var(--dsw-alias-label-primary)" : "var(--dsw-alias-label-secondary)",
+                font: "inherit", fontSize: 11, cursor: "pointer" } },
+              item.intent === "REFUND" ? "退票" : item.intent === "CHANGE" ? "改签"
+                : item.intent === "POLICY" ? "规则" : item.intent || `子诉求 ${index + 1}`))) : null,
+          h("div", { style: { display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 } },
+            meta.map((label) => h("span", { key: label, style: inspectorChipStyle }, label))),
+          current.text ? h("p", { style: { ...inspectorMuted, margin: "0 0 10px" } }, `当前子诉求：${current.text}`) : null,
+          current.funnel.map((stage, stageIndex) => {
+            const cap = typeof stage.k === "number" && stage.k > 0 ? stage.k : null;
+            const count = typeof stage.count === "number" ? stage.count : null;
+            const percent = cap && count !== null ? Math.min(100, Math.max(0, count / cap * 100)) : 0;
+            const items = stage.items?.length ? h("ul", { style: { listStyle: "none", margin: "5px 0 0", padding: 0 } },
+              stage.items.map((item, itemIndex) => h("li", { key: item.id || `${item.title}-${itemIndex}` },
+                h("button", { type: "button", "aria-pressed": item.id === highlight,
+                  onClick: () => setHighlight(item.id), style: { display: "grid", width: "100%", gap: 2,
+                    gridTemplateColumns: "minmax(0, 1fr) auto", padding: "5px 6px", border: 0, borderRadius: 5,
+                    background: item.id === highlight ? "var(--dsw-alias-interactive-bg-active)" : "transparent",
+                    color: "var(--dsw-alias-label-primary)", textAlign: "left", font: "inherit", cursor: "pointer" } },
+                h("code", { style: { color: "var(--dsw-alias-label-primary)", fontSize: 10 } }, item.id || "无规则 ID"),
+                h("b", { style: { color: "var(--dsw-alias-label-tertiary)", fontSize: 9,
+                  fontVariantNumeric: "tabular-nums" } }, typeof item.score === "number" ? item.score.toFixed(4) : "—"),
+                h("span", { style: { gridColumn: "1 / -1", color: "var(--dsw-alias-label-secondary)",
+                  fontSize: 10 } }, item.title || "无标题"))))) : null;
+            return h("section", { key: `${stage.stage || stage.label}-${stageIndex}`, style: { padding: "9px 0",
+              borderTop: "1px solid var(--dsw-alias-border-l1)" } },
+              h("header", { style: { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" } },
+                h("strong", { style: { fontSize: 11 } }, stage.label || stage.stage || `阶段 ${stageIndex + 1}`),
+                h("span", { style: inspectorFaint }, `${count ?? "本轮无数据"}${cap ? ` / ${cap}` : ""}`)),
+              h("div", { "aria-hidden": "true", style: { height: 3, margin: "6px 0", borderRadius: 3,
+                overflow: "hidden", background: "var(--dsw-alias-border-l1)" } },
+                h("i", { style: { display: "block", width: `${percent}%`, height: "100%",
+                  background: "var(--dsw-alias-brand-primary)" } })),
+              items);
+          }));
+      }
+    } else if (tab === "memory") {
+      const hasContext = context && Object.keys(context).length;
+      const hasMemory = memory && Object.keys(memory).length;
+      if (!hasContext && !hasMemory) body = inspectorEmpty("本轮暂无记忆数据", "对话后显示订单栈、上下文预算与摘要。");
+      else {
+        const blocks = Object.entries(context.blocks || {});
+        body = h("div", null,
+          hasContext ? inspectorSection("上下文预算",
+            h("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 8 } },
+              h("strong", { style: { fontSize: 12 } }, `${context.total ?? "—"} / ${context.budget ?? "—"} tokens`),
+              h("span", { style: { color: "var(--dsw-alias-state-success-primary)", fontSize: 10 } },
+                `节省 ${context.saved_pct ?? 0}%`)),
+            blocks.length ? blocks.map(([name, block]) => {
+              const percent = block.budget ? Math.min(100, Math.max(0, (block.tokens || 0) / block.budget * 100)) : 0;
+              return h("details", { key: name, style: { padding: "7px 0",
+                borderTop: "1px solid var(--dsw-alias-border-l1)" } },
+                h("summary", { style: { display: "flex", gap: 7, alignItems: "baseline", cursor: "pointer", fontSize: 11 } },
+                  h("span", { style: { flex: 1 } }, ({ system: "系统提示", order: "订单", rules: "规则",
+                    history: "历史", profile: "画像" })[name] || name),
+                  h("b", { style: { fontSize: 9, fontWeight: 500 } }, `${block.tokens ?? "—"} / ${block.budget ?? "—"}`),
+                  h("em", { style: { color: block.truncated ? "var(--dsw-alias-state-warn-primary)"
+                    : "var(--dsw-alias-label-tertiary)", fontSize: 9, fontStyle: "normal" } },
+                  block.truncated ? "已截断" : "完整")),
+                h("div", { "aria-hidden": "true", style: { height: 3, margin: "6px 0", borderRadius: 3,
+                  overflow: "hidden", background: "var(--dsw-alias-border-l1)" } },
+                  h("i", { style: { display: "block", width: `${percent}%`, height: "100%",
+                    background: "var(--dsw-alias-brand-primary)" } })),
+                block.text ? h("p", { style: inspectorMuted }, block.text) : h("p", { style: inspectorFaint }, "无注入文本"));
+            }) : h("p", { style: inspectorFaint }, "上下文分块本轮无数据")) : null,
+          hasMemory ? inspectorSection("会话记忆",
+            memory.order_stack ? h("div", { style: { marginBottom: 8 } }, h("h4", { style: { margin: "0 0 5px",
+              ...inspectorFaint } }, "订单栈"),
+              memory.order_stack.length ? h("div", { style: { display: "flex", flexWrap: "wrap", gap: 4 } },
+                memory.order_stack.map((order) => h("code", { key: order, style: inspectorChipStyle }, order)))
+                : h("p", { style: inspectorFaint }, "空")) : null,
+            h("dl", { style: { display: "grid", gap: 5, margin: "0 0 10px", fontSize: 11 } },
+              h("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
+                h("dt", { style: inspectorFaint }, "窗口轮数"),
+                h("dd", { style: { margin: 0 } }, Array.isArray(memory.turns) ? memory.turns.length : memory.turns ?? 0)),
+              h("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
+                h("dt", { style: inspectorFaint }, "上一意图"),
+                h("dd", { style: { margin: 0 } }, memory.last_intent === "REFUND" ? "退票"
+                  : memory.last_intent === "CHANGE" ? "改签" : memory.last_intent || "—"))),
+            h("h4", { style: { margin: "0 0 4px", ...inspectorFaint } }, "滑动窗口摘要"),
+            h("p", { style: inspectorMuted }, memory.summary || "尚未产生摘要"),
+            h("details", { style: { marginTop: 8 } }, h("summary", { style: { ...inspectorFaint, cursor: "pointer" } },
+              "完整记忆快照"), inspectorJson(memory))) : null);
+      }
+    } else if (!verify && !comparisons.length && !(result.results || []).length) {
+      body = inspectorEmpty("本轮暂无校验结果", "方案生成后展示金额比对、规则引用与校验问题。");
+    } else {
+      const refs = verify?.references || verify?.rule_refs ||
+        (result.final?.options || []).flatMap((option) => option.rule_refs || []);
+      const issues = [...(verify?.errors || []), ...(result.results || []).map((item) => item.error).filter(Boolean)];
+      const support = typeof verify?.support_ratio === "number" ? `${Math.round(verify.support_ratio * 100)}%` : undefined;
+      const metric = (label, value) => h("div", { key: label, style: { padding: "8px 9px",
+        border: "1px solid var(--dsw-alias-border-l1)", borderRadius: 6, background: "var(--dsw-alias-bg-layer-1)" } },
+        h("span", { style: { display: "block", ...inspectorFaint } }, label),
+        h("strong", { style: { display: "block", marginTop: 3, fontSize: 12 } }, value ?? "本轮无数据"));
+      body = h("div", null,
+        h("p", { role: "status", style: { margin: "0 0 10px", padding: "7px 8px", borderRadius: 6, fontSize: 11,
+          textAlign: "center", color: verification.kind === "success" ? "var(--dsw-alias-state-success-primary)"
+            : verification.kind === "failure" ? "var(--dsw-alias-state-error-primary)"
+            : "var(--dsw-alias-label-secondary)",
+          background: verification.kind === "success" ? "color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent)"
+            : verification.kind === "failure" ? "color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent)"
+            : "var(--dsw-alias-bg-layer-1)" } }, verification.label),
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, marginBottom: 10 } },
+          metric("置信度", verify?.confidence), metric("校验门槛", verify?.threshold),
+          metric("依据覆盖率", support), metric("自我修正", verify?.retries ?? result.retries)),
+        inspectorSection("金额比对 · 方案 / 运价引擎", comparisons.length ? h("div", { style: { overflowX: "auto" } },
+          h("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 10 } },
+            h("thead", null, h("tr", null, ["项目", "方案", "引擎", "结果"].map((label) =>
+              h("th", { key: label, style: { padding: "5px 4px", textAlign: "left", color: "var(--dsw-alias-label-tertiary)",
+                fontWeight: 500, borderBottom: "1px solid var(--dsw-alias-border-l1)" } }, label)))),
+            h("tbody", null, comparisons.map((row, index) => h("tr", { key: `${row.label}-${index}` },
+              [row.label, row.actual == null ? "—" : `¥${Number(row.actual).toLocaleString("zh-CN")}`,
+                row.expected == null ? "—" : `¥${Number(row.expected).toLocaleString("zh-CN")}`,
+                row.matched === true ? "一致" : row.matched === false ? "不一致" : "无数据"].map((cell, cellIndex) =>
+                h("td", { key: cellIndex, style: { padding: "5px 4px", borderBottom: "1px solid var(--dsw-alias-border-l1)",
+                  color: cellIndex === 3 && row.matched === false ? "var(--dsw-alias-state-error-primary)"
+                    : "var(--dsw-alias-label-secondary)" } }, cell)))))))
+          : inspectorEmpty("本轮没有可比对金额")),
+        inspectorSection("论断与规则依据",
+          refs.length ? h("div", { style: { display: "flex", flexWrap: "wrap", gap: 4 } },
+            refs.map((ref) => h("code", { key: ref, style: inspectorChipStyle }, String(ref))))
+            : h("p", { style: inspectorFaint }, "本轮无引用依据"),
+          verify?.unsupported_claims?.length ? h("ul", { style: { margin: "8px 0 0", paddingLeft: 17,
+            color: "var(--dsw-alias-state-warn-primary)", fontSize: 11 } },
+            verify.unsupported_claims.map((claim, index) => h("li", { key: index },
+              typeof claim === "string" ? claim : JSON.stringify(claim)))) : null,
+          verify?.bad_refs?.length ? h("p", { style: { color: "var(--dsw-alias-state-error-primary)",
+            fontSize: 11 } }, `无效引用：${verify.bad_refs.join("、")}`) : null),
+        issues.length ? inspectorSection("校验问题", h("ul", { style: { margin: 0, paddingLeft: 17,
+          color: "var(--dsw-alias-state-warn-primary)", fontSize: 11 } }, issues.map((issue, index) =>
+          h("li", { key: index }, String(issue))))) : null);
+    }
     return h("section", { "data-aeroagent-execution-inspector": "", "aria-label": "AeroAgent 执行观测栏",
-      style: { boxSizing: "border-box", height: "100%", overflow: "auto", padding: 20,
-        color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-bg-base)" } },
-      h("h2", { style: { margin: "0 0 8px", fontSize: 18, fontWeight: 600 } }, "执行观测栏"),
-      h("p", { style: { margin: "0 0 20px", maxWidth: "42ch", color: "var(--dsw-alias-label-secondary)",
-        fontSize: 13, lineHeight: 1.65 } }, "DSH 原生右侧标签已接入。业务对话恢复后，这里将展示本轮真实运行数据。"),
-      ["流程", "检索", "记忆", "校验"].map(row));
+      style: { boxSizing: "border-box", height: "100%", display: "flex", flexDirection: "column",
+        overflow: "hidden", color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-bg-base)" } },
+      h("header", { style: { flex: "0 0 auto", padding: "14px 14px 10px", borderBottom: "1px solid var(--dsw-alias-border-l1)" } },
+        h("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 } },
+          h("div", { style: { minWidth: 0 } },
+            h("h2", { style: { margin: 0, fontSize: 14, fontWeight: 600 } }, "运行详情"),
+            h("code", { style: { display: "block", marginTop: 4, maxWidth: 230, overflow: "hidden",
+              textOverflow: "ellipsis", color: "var(--dsw-alias-label-tertiary)", fontSize: 10 } },
+            caseId || "未绑定案件")),
+          h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+            h("span", { style: { color: record?.status === "RESULT_UNKNOWN" ? "var(--dsw-alias-state-error-primary)"
+              : "var(--dsw-alias-label-secondary)", fontSize: 10 } }, record?.status || (phase === "loading" ? "读取中" : "READY")),
+            h("button", { type: "button", disabled: !caseId || phase === "loading" || phase === "refreshing",
+              onClick: () => setReload((value) => value + 1), style: { ...secondaryButton, padding: "3px 7px", fontSize: 10 } },
+            phase === "refreshing" ? "刷新中" : "刷新")))),
+      h("div", { role: "tablist", "aria-label": "执行观测分区", style: { flex: "0 0 auto", display: "grid",
+        gridTemplateColumns: "repeat(4, 1fr)", padding: "0 10px", borderBottom: "1px solid var(--dsw-alias-border-l1)" } },
+        nativeExecutionTabs.map(([id, label]) => h("button", { key: id, type: "button", role: "tab", "aria-selected": tab === id,
+          onClick: () => setTab(id), style: { padding: "8px 2px", border: 0,
+            borderBottom: tab === id ? "2px solid var(--dsw-alias-brand-primary)" : "2px solid transparent",
+            background: "transparent", color: tab === id ? "var(--dsw-alias-label-primary)"
+              : "var(--dsw-alias-label-secondary)", font: "inherit", fontSize: 11, cursor: "pointer" } }, label))),
+      h("div", { role: "tabpanel", style: { flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "10px 14px 22px" } }, body));
   }
   function NativeExecutionInspectorButton() {
     return h("button", { type: "button", title: "打开 AeroAgent 执行观测栏", "aria-label": "打开 AeroAgent 执行观测栏",
@@ -1247,7 +1570,8 @@ const inject = ["slots", "layout", "sidebarRight", "sidebarRightTabs"];
 globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
   { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing,
     quoteStateAfter, followAction, traceEventKey, verificationView, quoteCardState, bootstrapDshUI, nativeSlotsApply,
-    fetchNativeOrders, createNativeOrderSelection, parseNativeCompletion, fetchNativeChat, createNativeConversationStore,
+    fetchNativeOrders, createNativeOrderSelection, fetchNativeCase, nativeExecutionTabs, nativeRetrievalResults,
+    nativeFeeComparisons, nativeVerificationState, parseNativeCompletion, fetchNativeChat, createNativeConversationStore,
     nativeOrderBindingStatus, openNativeAeroConversation, NATIVE_DEMO_USERS, createNativeUserStore, createNativeWatchStore, scrollNativeChatToLatest,
     fetchNativeAdmin, fetchNativeRules, fetchNativeEvaluation, startNativeEvaluation, fetchNativeDemoData,
     filterNativeEvaluationCases, isNativeEvaluationTerminal });
