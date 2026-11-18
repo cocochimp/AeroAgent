@@ -61,6 +61,7 @@ flowchart TD
 | `app/` | 唯一后端，包含 API、应用服务、三 Agent、领域逻辑与适配器 |
 | `frontend/` | React + Vite 工作台及前端测试 |
 | `desktop/` | Electron 主进程、开发联动与生产打包脚本 |
+| `dsh-plugin-aeroagent/` | DSH 只读业务工具与零依赖可视化客户端插件 |
 | `migrations/` | Alembic 数据库版本迁移 |
 | `demo_data/` | 虚构航班、订单、规则与评测种子数据 |
 | `eval/` | 评测数据与离线评测资产 |
@@ -89,6 +90,17 @@ npm --prefix frontend ci && npm --prefix frontend run dev
 ```
 
 访问 <http://localhost:5173>，Vite 将 `/api` 代理到 `http://127.0.0.1:8000`。FastAPI lifespan 会初始化 SQLite、种子数据、本地检索投影和内嵌 worker。
+
+### DSH 可视化接入
+
+学员也可以只在 DSH 宿主内完成完整退改签，不再打开独立网页：
+
+- 左上为查询订单、改签报价、退票报价等业务入口，左下为评测、规则、数据学习入口。
+- 对话上方横排订单卡用于关联订单；报价在对话中生成可交互卡片，明确确认后才进入交易。
+- 右侧固定展示「流程、检索、记忆、校验」，数据来自同一案件的真实执行结果。
+- 确认后的 `202 ACCEPTED` 仅表示受理，客户端会继续跟踪 TransactionAgent，直到 `CHANGED`、`REFUNDED` 或异常终态。
+
+后端仍以 `DEMO_AUTH=true uv run uvicorn app.api.main:app --port 8000` 单独启动，默认 `aeroagent-mock` 不需要 DeepSeek 账号或 API Key。安装、web profile 配置和验收步骤见 [`docs/dsh-integration.md`](docs/dsh-integration.md)，插件说明见 [`dsh-plugin-aeroagent/README.md`](dsh-plugin-aeroagent/README.md)。
 
 ### Docker 全栈
 
@@ -169,6 +181,7 @@ uv run pytest -q
 uv run python scripts/check_docstrings.py
 npm --prefix frontend test
 npm --prefix frontend run build
+npm --prefix dsh-plugin-aeroagent test
 ```
 
 零 key 端到端冒烟覆盖改签、退票、报价确认、幂等提交与 SSE 事件。先在终端一启动服务，再在终端二执行脚本：

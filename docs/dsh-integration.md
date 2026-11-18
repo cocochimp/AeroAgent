@@ -1,71 +1,144 @@
 # DSH 接入指南（学员版）
 
-本文面向课程学员，说明如何在本机把 AeroAgent 接入 DSH（DeepSeek Harness）：把本地后端当作模型提供方、安装业务工具插件，以及可选的 MCP 只读接入。全程免登录、零 API Key。
+本文说明如何在本机把 AeroAgent 接入 DSH（DeepSeek Harness），并只在 DSH 内完成机票查询、退改报价、确认办理和业务学习。默认使用本地 `aeroagent-mock`，**不需要 DeepSeek 账号或 API Key，也不回退独立网页**。
 
-> 版本提示：DSH 当前为 **v0.1 预览版**，接口与配置格式可能变动，请务必**锁定版本**安装（如 `@deepseek-ai/dsh@0.1.x`），不要跟随 latest。网络受限时给 npx 加 `--offline`（或提前 `npm i -g` 后用本地命令），规避安装期网络超时。
+> DSH 当前为 v0.1 预览版。请锁定 `@deepseek-ai/dsh@0.1.x`；网络受限时使用 `--offline` 或提前安装。AeroAgent 后端仍需单独启动，但学员的业务操作都在 DSH 中完成。
 
-## 三步骤接入
+## 最终界面
 
-### ① 启动 AeroAgent 本地后端
+- **左上「业务办理」**：查询订单、改签报价、退票报价、退改对话。
+- **左下「业务学习」**：评测、规则、数据，切换中间工作区，不离开 DSH。
+- **对话上方订单卡**：点击关联订单，后续快捷操作使用该订单。
+- **对话内报价卡**：费用明细、票规依据、「确认办理／暂不办理」。多个可办理方案分别成卡。
+- **右侧「执行观测」**：固定显示流程、检索、记忆、校验，以及案件和订单状态。
+
+## ① 启动 AeroAgent 后端
 
 在仓库根目录执行：
 
 ```bash
-DEMO_AUTH=true uv run uvicorn app.api.main:app --port 8000
+DEMO_AUTH=true uv run uvicorn app.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-- `DEMO_AUTH=true` 开启演示令牌：后端接受 `Bearer demo:u_zhang`（普通用户）与 `Bearer demo-admin:u_zhang`（管理员）这类明文令牌，**免登录、零 Key**。
-- 首次启动会自动建表（SQLite，落在 `var/aeroagent.db`）并灌入演示订单/规则数据。
-- 自检：`curl -s http://127.0.0.1:8000/api/v1/health`。
+- 首次启动自动初始化 `var/aeroagent.db`、演示订单、规则和内嵌 worker。
+- `DEMO_AUTH=true` 允许本地演示令牌 `demo:u_zhang` 和 `demo-admin:u_zhang`，仅用于本机演示。
+- 自检：`curl -fsS http://127.0.0.1:8000/api/v1/health`。
+- 浏览器从 DSH 的 3080 端口访问后端的 8000 端口，默认只放行 `http://127.0.0.1:3080` 和 `http://localhost:3080`。自定义端口时，在启动后端前设置逗号分隔的 `AEROAGENT_DSH_ORIGINS`，不要使用通配符来源。
 
-### ② DSH 配置自定义提供方
-
-AeroAgent 后端暴露 OpenAI 兼容端点（`GET /v1/models`、`POST /v1/chat/completions`），可直接注册为 DSH 的自定义提供方。在 DSH 的 settings patch（YAML）中加入：
-
-```yaml
-# dsh.settings.patch.yml —— 注册 AeroAgent 本地提供方
-- insert:
-    - id: aeroagent-provider
-      name: AeroAgent Local
-      type: openai-compat
-      baseURL: http://127.0.0.1:8000/v1
-      apiKey: not-needed          # mock 档不校验 Key，占位即可（免登录零 Key）
-      models:
-        - id: aeroagent-mock
-          name: AeroAgent mock 档（本地确定性链路）
-```
-
-说明：
-
-- `aeroagent-mock` 档完全跑本地退改签主链，不请求任何外部 LLM，因此 `apiKey` 只是占位符。
-- 宿主请求带上业务工具时，mock 档会在合适时机返回 `tool_calls` 委派给 ③ 安装的插件工具，再把工具结果汇总成答复。
-- 字段名以本机安装的 DSH v0.1 文档为准；预览版格式若有出入，只需保证 `baseURL` 指向 `http://127.0.0.1:8000/v1`、模型 ID 为 `aeroagent-mock`。
-
-### ③ 安装 AeroAgent 业务工具插件
-
-插件源码在本仓库 `dsh-plugin-aeroagent/` 目录（零运行时依赖，见该目录 README.md）。用 DSH CLI 从本地路径安装：
+## ② 安装可视化业务插件
 
 ```bash
-npx --offline @deepseek-ai/dsh@0.1.x plugin --profile headless add <repo>/dsh-plugin-aeroagent
+npx --offline @deepseek-ai/dsh@0.1.x plugin --profile web add /absolute/path/AeroAgent/dsh-plugin-aeroagent
 ```
 
-对应的 profile patch insert 片段（插件包内 `cordis.patch.yml` 已自带，手动配置时参考）：
+插件没有 npm runtime dependencies。它同时提供：
+
+1. 五个只读宿主工具；
+2. 零 import/export 的可视化 `client.js`，负责三栏布局、报价卡、确认与执行观测。
+
+如需 headless 工具验证，再执行：
+
+```bash
+npx --offline @deepseek-ai/dsh@0.1.x plugin --profile headless add /absolute/path/AeroAgent/dsh-plugin-aeroagent
+```
+
+> 修改 `client.js` 后需要重启 DSH web。v0.1 会缓存组合插件包，仅刷新浏览器可能仍加载旧代码。
+
+## ③ 配置本地提供方并启动 DSH
+
+在 web profile 的 `cordis.patch.yml` 中合并以下配置。若使用隔离环境，可设 `DSH_HOME=/tmp/dsh-home`，profile 路径即为 `/tmp/dsh-home/profiles/web/cordis.patch.yml`。
 
 ```yaml
-# AeroAgent 业务工具层：向宿主注册退改签只读工具
+# AeroAgent 服务端工具
 - insert:
     - id: aeroagent-tools
       name: dsh-plugin-aeroagent
       inject: [tools]
+
+# 仅限本机免账号演示
+- id: authorization
+  disabled: true
+- id: deepseek-account
+  disabled: true
+- id: account-controller
+  disabled: true
+- id: llm-deepseek-account
+  disabled: true
+
+# OpenAI 兼容提供方
+- id: llm-pi-ai
+  config:
+    providers:
+      aeroagent:
+        apiKeyEnv: AEROAGENT_STUB_KEY
+        api: openai-completions
+        baseURL: http://127.0.0.1:8000/v1
+        models:
+          - id: aeroagent-mock
+            input: [text]
+- id: agent-default-model
+  config:
+    provider: aeroagent
+    model: aeroagent-mock
 ```
 
-安装后在 headless profile 里向 `aeroagent-mock` 提问「查一下我的订单」，模型会调用 `aeroagent_list_orders` 返回演示订单（ORD 开头单号）。
+启动 web：
+
+```bash
+DSH_HOME=/tmp/dsh-home AEROAGENT_STUB_KEY=dummy \
+  npx --offline @deepseek-ai/dsh@0.1.x --profile web
+```
+
+`AEROAGENT_STUB_KEY` 只是宿主配置占位符，不会用于外部模型请求。使用终端输出的完整 token 链接打开 DSH；服务重启后 token 可能变化，不要长期使用旧链接。
+
+后端提供：
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`，支持 SSE stream 和宿主 `tool_calls`。
+- 每个 AeroAgent 答复包含隐藏案件元数据，下一轮恢复原案件和会话，不会把追问误建成新案件。
+- 可办理报价使用 `aeroagent-quote` 结构返回，由客户端替换成卡片；其他宿主内容保持原样。
+
+## 学员操作与交易状态
+
+1. 点击订单卡，或从左上选择改签／退票快捷入口。
+2. 检查输入框中的 `@订单号` 和诉求，明确发送。
+3. 等待报价卡，核对费用、目标航班与规则依据。
+4. 点击「确认办理」后：
+   - `202 ACCEPTED` 仅表示受理，界面显示办理中，**不是办理成功**。
+   - 客户端通过认证 SSE 和案件快照跟踪 TransactionAgent。
+   - 成功后订单变为 `CHANGED` 或 `REFUNDED`，订单卡与右侧案件状态同步刷新。
+   - 价格变化时生成新报价，必须再次明确确认。
+   - `RESULT_UNKNOWN` 表示结果待核对，不会自动重试；确认重试复用同一幂等键。
+5. 点击「暂不办理」会真实取消案件和报价，不只是隐藏卡片，且不会创建交易。
+6. 右侧切换流程、检索、记忆、校验；左下进入评测、规则、数据学习页。
+
+## 自动化与浏览器验收
+
+运行客户端契约测试：
+
+```bash
+npm --prefix dsh-plugin-aeroagent test
+```
+
+运行相关后端测试：
+
+```bash
+uv run pytest -q tests/test_openai_compat.py tests/test_dsh_cors.py \
+  tests/test_issue_ticket.py tests/test_confirmation_concurrency.py
+```
+
+开发验收使用 ego-lite 打开 DSH token 链接，至少验证：
+
+- `window.__AERO_CLIENT_LOADED === true`，没有插件加载异常；
+- 左上/左下导航、订单绑定、四个右侧页签；
+- 退票和改签各一条真实确认链路，最终订单状态正确；
+- 取消后案件为 `CANCELLED` 且没有交易；
+- 追问前后 `case_id` 不变；
+- 学习页数据来自真实后端。
 
 ## MCP 只读接入（可选）
 
-不想装插件、或宿主只支持 MCP 时，可用仓库内置的只读 MCP server（`python -m app.mcp`，纯标准库、stdio 传输、协议版本 `2024-11-05`）。它暴露五个只读工具：`aeroagent_list_orders`、`aeroagent_get_case`、`aeroagent_get_quote`、`aeroagent_list_rules`、`aeroagent_get_evaluation`，数据全部来自 ① 的后端。
-
-DSH 侧通过 dsh-mcp-manager 注册，或直接在 Claude Desktop 的 MCP 配置（`claude_desktop_config.json`）中加入同一段 stdio 配置：
+不想安装业务工具、或宿主只支持 MCP 时，可使用仓库内置只读 MCP server（`python -m app.mcp`，纯标准库、stdio、协议版本 `2024-11-05`）。它暴露与插件相同的五个只读工具，数据来自本机后端。
 
 ```json
 {
@@ -73,7 +146,7 @@ DSH 侧通过 dsh-mcp-manager 注册，或直接在 Claude Desktop 的 MCP 配�
     "aeroagent": {
       "command": "uv",
       "args": ["run", "python", "-m", "app.mcp"],
-      "cwd": "<repo 绝对路径>",
+      "cwd": "/absolute/path/AeroAgent",
       "env": {
         "AEROAGENT_BACKEND_URL": "http://127.0.0.1:8000"
       }
@@ -82,6 +155,11 @@ DSH 侧通过 dsh-mcp-manager 注册，或直接在 Claude Desktop 的 MCP 配�
 }
 ```
 
-- 使用前先确保 ① 的后端在跑；`AEROAGENT_BACKEND_URL` 不设置时默认 `http://127.0.0.1:8000`。
-- 手动自检：把三条 JSON-RPC（`initialize` / `tools/list` / `tools/call`）按行管道进 `uv run python -m app.mcp`，应逐行返回 JSON 响应。
-- 自动化验收：`uv run pytest -q tests/test_mcp_server.py`（测试内嵌假后端，自包含，不依赖真实服务）。
+自动化验收：`uv run pytest -q tests/test_mcp_server.py`。MCP 只提供只读数据，不替代可视化报价卡中的显式 Quote API 确认。
+
+## 预览版边界
+
+- DSH v0.1 的 DOM 和组合加载方式可能变化；客户端优先使用 `data-composer-input`、导航语义和 `__ModuleLoader__` 锚点。
+- 普通脚本不能包含 import/export；IIFE 和幂等注册用于兼容组合包与独立脚本重复执行。
+- 本方案不包含由 DSH 自动托管 AeroAgent 后端进程的能力。
+- 演示令牌、mock 航司和关闭宿主鉴权不得用于生产环境。
