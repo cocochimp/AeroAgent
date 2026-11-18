@@ -111,6 +111,8 @@ def generate_change_options(quotes: Sequence[Mapping], profile: Mapping | None =
     """
     if not 2 <= len(quotes) <= 5:
         raise ValueError("SmartMock 改签报价必须为 2–5 个")
+    if any(not quote.get("allowed") for quote in quotes):
+        raise ValueError("SmartMock 报价包含不可办理候选，不能生成推荐方案")
     products = _profile_products(profile)
     price_sensitive = ((profile or {}).get("data") or {}).get("price_sensitivity") == "高"
 

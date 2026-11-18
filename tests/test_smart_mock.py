@@ -254,6 +254,15 @@ def test_high_level_pipeline_does_not_recommend_forbidden_voluntary_changes():
     assert exc.value.code == "CHANGE_NOT_ALLOWED"
 
 
+def test_staged_presentation_rejects_nonbookable_quote_set():
+    quotes = _quotes(2)
+    blocked = {**quotes[0], "allowed": False, "change_fee": 0, "fare_diff": 0, "total": 0,
+               "reason": "该票价产品不得自愿改签"}
+
+    with pytest.raises(ValueError, match="不可办理"):
+        proposal.generate_change_options([blocked, quotes[1]])
+
+
 def test_profile_changes_ranking_and_reason_but_never_quotes():
     quotes = _quotes(3)
     original_quotes = copy.deepcopy(quotes)
@@ -296,66 +305,165 @@ def test_model_supplied_rationale_is_discarded_and_regenerated_from_quote_facts(
     assert "虚构" not in options[0]["rationale"] + options[1]["rationale"]
     assert "休息室" not in options[0]["rationale"] + options[1]["rationale"]
     assert "1元" not in options[0]["rationale"] + options[1]["rationale"]
-    assert verification.check_change_options(options, profile=None)["passed"]
+    assert verification.check_change_options(options, quotes=_quotes(len(options)), profile=None)["passed"]
 
 
 def test_generated_rationales_pass_independent_verification():
     profile = {"tier": "金卡", "data": {"price_sensitivity": "高", "products": {"Y": 8}}}
     options = _options(3, profile)
-    result = verification.check_change_options(options, profile=profile)
+    result = verification.check_change_options(options, quotes=_quotes(len(options)), profile=profile)
     assert result["passed"] and result["confidence"] == 1.0
     assert result["quote_mismatch"] is False
     assert result["unsupported_claims"] == []
 
 
+@pytest.mark.parametrize("field,value", [("type", "REFUND"), ("allowed", False)])
+def test_verification_checks_option_type_and_allowed_against_quote(field, value):
+    options = _options(2)
+    options[0][field] = value
+
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
+
+    assert not result["passed"]
+    assert any(field in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("old,new", [
+    ("MU6001", "MU6999"),
+    ("2026-09-29", "2026-10-09"),
+    ("09:30", "10:30"),
+    ("Y舱", "C舱"),
+    ("Y_DISCOUNT", "SPECIAL"),
+])
+def test_verification_rejects_title_target_fact_mismatch(old, new):
+    options = _options(2)
+    assert old in options[0]["title"]
+    options[0]["title"] = options[0]["title"].replace(old, new, 1)
+
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
+
+    assert not result["passed"]
+    assert any("标题" in error for error in result["errors"])
+
+
+def test_verification_accepts_reworded_title_with_correct_target_facts():
+    options = _options(2)
+    target = options[0]["target"]
+    options[0]["title"] = (f"航班 {target['flight_no']}，{target['date']} {target['dep_time']} 出发，"
+                           f"{target['cabin']}舱，票种：{target['fare_product']}")
+
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
+
+    assert result["passed"], result["errors"]
+
+
+def test_verification_rejects_wrong_numeric_fare_in_title():
+    options = _options(2)
+    options[0]["title"] += f"，票面价{options[0]['target']['fare'] - 1}元"
+
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
+
+    assert not result["passed"]
+    assert any("标题" in error for error in result["errors"])
+
+
 def test_rationale_with_wrong_or_unsupported_price_is_rejected():
     options = _options(2)
     options[0]["rationale"] = "改期费999元，合计360元。"
-    result = verification.check_change_options(options)
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
     assert not result["passed"] and result["quote_mismatch"]
     assert 999 in result["bad_quotes"]
 
     options = _options(2)
     options[0]["rationale"] = "另需支付999元。"
-    result = verification.check_change_options(options)
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
     assert not result["passed"] and result["quote_mismatch"]
 
 
 def test_rationale_cannot_add_membership_benefit_or_inventory_claims():
     options = _options(2)
     options[0]["rationale"] += "金卡会员免费改签，赠送休息室且余票充足。"
-    result = verification.check_change_options(options)
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
     assert not result["passed"]
-    assert result["unsupported_claims"]
+    assert result["unsupported_claims"] == ["金卡会员免费改签，赠送休息室且余票充足"]
 
 
 def test_rationale_cannot_falsely_claim_lowest_total_or_profile_match():
     options = _options(3)
     options[1]["rationale"] += "本候选合计最低。"
-    result = verification.check_change_options(options)
-    assert not result["passed"] and result["unsupported_claims"]
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
+    assert not result["passed"]
+    assert result["unsupported_claims"] == ["本候选合计最低"]
 
     profile = {"data": {"price_sensitivity": "低", "products": {"C": 10}}}
     options = _options(3, profile)
     non_c = next(o for o in options if o["target"]["fare_product"] != "C")
     non_c["rationale"] += "符合画像中的 C 票种偏好。"
-    result = verification.check_change_options(options, profile=profile)
-    assert not result["passed"] and result["unsupported_claims"]
+    result = verification.check_change_options(options, quotes=_quotes(len(options)), profile=profile)
+    assert not result["passed"]
+    assert result["unsupported_claims"] == ["符合画像中的 C 票种偏好"]
+
+
+def test_canonical_drift_is_not_misreported_as_an_unsupported_claim():
+    options = _options(2)
+    options[0]["rationale"] = "行程与费用已按报价核算。"
+
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
+
+    assert not result["passed"]
+    assert result["unsupported_claims"] == []
+    assert result["canonical_mismatches"] == [options[0]["candidate_id"]]
+
+
+def test_true_lowest_claim_is_supported_even_when_canonical_text_differs():
+    options = _options(2)
+    options[0]["rationale"] = "本候选合计最低。"
+
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
+
+    assert not result["passed"]
+    assert result["unsupported_claims"] == []
+    assert result["canonical_mismatches"] == [options[0]["candidate_id"]]
 
 
 def test_option_amount_candidate_identity_and_count_are_verified():
     options = _options(2)
     options[0]["total"] += 1
-    result = verification.check_change_options(options)
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
     assert not result["passed"] and result["quote_mismatch"]
 
     options = _options(2)
     options[0]["fee_items"][0]["amount"] += 1
-    assert not verification.check_change_options(options)["passed"]
+    assert not verification.check_change_options(options, quotes=_quotes(len(options)))["passed"]
 
     options = _options(2)
     options[1]["candidate_id"] = options[0]["candidate_id"]
-    result = verification.check_change_options(options)
+    result = verification.check_change_options(options, quotes=_quotes(len(options)))
     assert not result["passed"] and any("candidate_id" in e for e in result["errors"])
 
-    assert not verification.check_change_options(_options(2)[:1])["passed"]
+    assert not verification.check_change_options(_options(2)[:1], quotes=_quotes(2))["passed"]
+
+
+def test_public_verification_requires_independently_retained_quotes():
+    trusted = _quotes(2)
+    tampered = copy.deepcopy(trusted)
+    tampered[0].update(change_fee=0, fare_diff=0, total=0)
+    options = proposal.generate_change_options(tampered)
+
+    with pytest.raises(TypeError):
+        verification.check_change_options(options)
+
+
+def test_trusted_quote_path_accepts_valid_options_and_rejects_self_consistent_tampering():
+    trusted = _quotes(2)
+    valid_options = proposal.generate_change_options(trusted)
+    assert verification.check_change_options(valid_options, quotes=trusted)["passed"]
+
+    tampered = copy.deepcopy(trusted)
+    tampered[0].update(change_fee=0, fare_diff=0, total=0)
+    tampered_options = proposal.generate_change_options(tampered)
+    result = verification.check_change_options(tampered_options, quotes=trusted)
+
+    assert not result["passed"]
+    assert result["quote_mismatch"]
+    assert any("内嵌报价" in error or "合计" in error for error in result["errors"])

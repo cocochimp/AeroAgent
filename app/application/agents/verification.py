@@ -29,6 +29,16 @@ REFUND_WORDS = {"退款", "退还", "退回"}
 SHOWN_FIELDS = ("change_fee", "fare_diff", "total", "refund_fee", "refund_amount", "tax")
 SPLIT = re.compile(r"[。！？；!?;]")
 CJK_TAIL = re.compile(r"[一-鿿]{0,2}")
+CANDIDATE_CLAIM_KEYS = re.compile(
+    CLAIM_KEYS.pattern + r"|休息室|余票|库存|有票|优先登机|行李额|餐食|升舱|赠送|权益|划算")
+CANDIDATE_LOWEST = re.compile(r"合计最低|总价最低|价格最低|票价最低|最便宜")
+CANDIDATE_PROFILE_PRODUCT = re.compile(r"符合画像中的\s*([A-Z_]+)\s*票种偏好")
+TITLE_FLIGHT = re.compile(r"(?<![A-Z0-9])[A-Z]{2}\d{3,8}(?!\d)")
+TITLE_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+TITLE_TIME = re.compile(r"(?<!\d)(?:[01]\d|2[0-3]):[0-5]\d(?!\d)")
+TITLE_CABIN = re.compile(r"(?<![A-Z])([FCY])舱")
+TITLE_PRODUCT = re.compile(r"(?:票种|票价产品|舱/)\s*[:：]?\s*(Y_DISCOUNT|SPECIAL|GROUP|[FCY])(?![A-Z_])")
+TITLE_FARE = re.compile(r"票面价\s*[:：]?\s*(\d+)元")
 
 
 def _norm(text: str) -> str:
@@ -214,21 +224,65 @@ def check(scheme: dict, results: list[dict], fact_checker=None) -> dict:
             "fee_comparison": fee_comparison, "passed": confidence >= threshold}
 
 
-def check_change_options(options: Sequence[Mapping], quotes: Sequence[Mapping] | None = None,
-                         profile: Mapping | None = None) -> dict:
-    """Verify SmartMock cards against independent quotes and canonical factual reasons.
+def _title_facts_match(title, target: Mapping) -> bool:
+    """Check all stated title facts while allowing non-canonical presentation wording."""
+    if not isinstance(title, str):
+        return False
+    flights = TITLE_FLIGHT.findall(title)
+    dates = TITLE_DATE.findall(title)
+    times = TITLE_TIME.findall(title)
+    cabins = TITLE_CABIN.findall(title)
+    products = TITLE_PRODUCT.findall(title)
+    fares = TITLE_FARE.findall(title)
+    return (bool(flights) and all(value == target["flight_no"] for value in flights)
+            and bool(dates) and all(value == target["date"] for value in dates)
+            and bool(times) and all(value == target["dep_time"] for value in times)
+            and bool(cabins) and all(value == target["cabin"] for value in cabins)
+            and bool(products) and all(value == target["fare_product"] for value in products)
+            and all(int(value) == target["fare"] for value in fares))
 
-    A quote is the pricing engine's validated output, not provider narrative. The
-    canonical proposal is regenerated to check ranking and rationale as well as all
-    structured amounts, candidate identity, target fields, fees, and rule references.
+
+def _candidate_unsupported(rationale: str, quote: Mapping, quotes: Sequence[Mapping],
+                           profile: Mapping | None) -> list[str]:
+    """Apply claim, cheapest-total, and profile checks independently of canonical text."""
+    normalized = [sentence for sentence in SPLIT.split(_norm(rationale)) if sentence.strip()]
+    raw = [sentence for sentence in SPLIT.split(rationale) if sentence.strip()]
+    sentences = raw if len(raw) == len(normalized) else normalized
+    cheapest = min(item["total"] for item in quotes)
+    profile_data = (profile or {}).get("data") or {}
+    products = profile_data.get("products") or {}
+    bad = []
+    for raw_sentence, sentence in zip(sentences, normalized):
+        unsupported = bool(CANDIDATE_CLAIM_KEYS.search(sentence))
+        if CANDIDATE_LOWEST.search(sentence) and quote["total"] != cheapest:
+            unsupported = True
+        for match in CANDIDATE_PROFILE_PRODUCT.finditer(sentence):
+            claimed_product = match.group(1)
+            weight = products.get(claimed_product, 0) if isinstance(products, Mapping) else 0
+            preferred = isinstance(weight, (int, float)) and not isinstance(weight, bool) and weight > 0
+            if claimed_product != quote["target"]["fare_product"] or not preferred:
+                unsupported = True
+        if unsupported:
+            bad.append(raw_sentence)
+    return bad
+
+
+def check_change_options(options: Sequence[Mapping], quotes: Sequence[Mapping],
+                         profile: Mapping | None = None) -> dict:
+    """Verify SmartMock cards against independently retained, trusted quotes.
+
+    A quote is the pricing engine's validated output, not provider narrative or an
+    embedded card copy. The canonical proposal is regenerated to check ranking and
+    rationale as well as all structured amounts, identity, target facts, and fees.
     """
     from app.application.agents.proposal import generate_change_options
     from app.application.smart_mock import candidate_id_for
 
     errors, amount_errors, bad_quotes, unsupported, bad_refs, fee_comparison = [], [], [], [], [], []
+    canonical_mismatches = []
     if not 2 <= len(options) <= 5:
         errors.append("SmartMock 改签方案必须为 2–5 个")
-    source_quotes = ([option.get("quote", {}) for option in options] if quotes is None else list(quotes))
+    source_quotes = list(quotes)
     try:
         expected_options = generate_change_options(source_quotes, profile)
     except (KeyError, TypeError, ValueError) as exc:
@@ -256,6 +310,12 @@ def check_change_options(options: Sequence[Mapping], quotes: Sequence[Mapping] |
         embedded = option.get("quote")
         if embedded is not None and embedded != quote:
             errors.append(f"candidate_id {candidate_id} 的内嵌报价与独立报价不一致")
+        if option.get("type") != quote.get("action"):
+            errors.append(f"candidate_id {candidate_id} 的 type 与报价 action 不一致")
+        if option.get("allowed") != quote.get("allowed"):
+            errors.append(f"candidate_id {candidate_id} 的 allowed 与可信报价不一致")
+        if not _title_facts_match(option.get("title"), target):
+            errors.append(f"candidate_id {candidate_id} 的标题航班、日期、时间、舱位或票价事实与目标不一致")
 
         expected_total = quote["total"]
         actual_total = option.get("total")
@@ -278,7 +338,7 @@ def check_change_options(options: Sequence[Mapping], quotes: Sequence[Mapping] |
 
         rationale = option.get("rationale")
         if not isinstance(rationale, str) or not rationale.strip():
-            unsupported.append(f"candidate_id {candidate_id} 缺少推荐理由")
+            canonical_mismatches.append(candidate_id)
             errors.append(f"candidate_id {candidate_id} 缺少推荐理由")
             continue
         unit = {"text": _norm(rationale),
@@ -287,18 +347,22 @@ def check_change_options(options: Sequence[Mapping], quotes: Sequence[Mapping] |
         current_errors, current_bad = _check_amounts(unit)
         amount_errors.extend(f"candidate_id {candidate_id}：{error}" for error in current_errors)
         bad_quotes.extend(current_bad)
+        for claim in _candidate_unsupported(rationale, quote, source_quotes, profile):
+            if claim not in unsupported:
+                unsupported.append(claim)
+            errors.append(f"candidate_id {candidate_id} 删除无依据的候选论断：「{claim.strip()}」")
         if rationale != expected["rationale"]:
-            unsupported.append(rationale)
-            errors.append(f"candidate_id {candidate_id} 的推荐理由偏离已校验报价事实")
+            canonical_mismatches.append(candidate_id)
+            errors.append(f"candidate_id {candidate_id} 的推荐理由与规范事实文案不一致")
 
     quote_mismatch = bool(amount_errors)
     errors = amount_errors + errors
     threshold = _threshold()
     confidence = 0.0 if errors else 1.0
     return {"confidence": confidence, "quote_mismatch": quote_mismatch, "bad_quotes": bad_quotes,
-            "unsupported_claims": unsupported, "bad_refs": bad_refs, "errors": errors,
-            "support_ratio": 0.0 if unsupported else 1.0, "threshold": threshold,
-            "fee_comparison": fee_comparison, "passed": not errors}
+            "unsupported_claims": unsupported, "canonical_mismatches": canonical_mismatches,
+            "bad_refs": bad_refs, "errors": errors, "support_ratio": 0.0 if unsupported else 1.0,
+            "threshold": threshold, "fee_comparison": fee_comparison, "passed": not errors}
 
 
 def _threshold():
