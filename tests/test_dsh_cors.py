@@ -24,3 +24,16 @@ def test_unlisted_origin_does_not_receive_cors_access():
     )
     assert response.status_code == 200
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_local_dsh_preflight_allows_existing_admin_put_requests():
+    response = TestClient(app).options(
+        "/api/v1/admin/rules/RULE-1",
+        headers={
+            "Origin": "http://127.0.0.1:3080",
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert "PUT" in response.headers["access-control-allow-methods"]

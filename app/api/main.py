@@ -50,7 +50,7 @@ _DSH_ORIGINS = [origin.strip() for origin in os.getenv(
     "AEROAGENT_DSH_ORIGINS", "http://127.0.0.1:3080,http://localhost:3080").split(",")
                 if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=_DSH_ORIGINS, allow_credentials=False,
-                   allow_methods=["GET", "POST", "OPTIONS"],
+                   allow_methods=["GET", "POST", "PUT", "OPTIONS"],
                    allow_headers=["Authorization", "Content-Type", "Last-Event-ID"])
 
 
@@ -70,6 +70,11 @@ app.include_router(orders.router)
 app.include_router(admin.router)
 app.include_router(health.router)
 app.include_router(openai_compat.router)
+
+# DSH 的原生 ES 模块由同一后端托管；只读插件目录，不回退到 React 页面。
+dsh_ui_dir = Path(__file__).resolve().parents[2] / "dsh-plugin-aeroagent" / "web"
+app.mount("/dsh-ui", StaticFiles(directory=str(dsh_ui_dir)), name="dsh-ui")
+
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 

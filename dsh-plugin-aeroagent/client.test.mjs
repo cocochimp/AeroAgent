@@ -118,3 +118,21 @@ test("registers the browser module with the DSH combo loader", async () => {
     else globalThis.window = previousWindow;
   }
 });
+
+test("bootstrap idempotently injects the native module and stylesheet", async () => {
+  const { bootstrapDshUI } = globalThis.AeroAgentClient || {};
+  assert.equal(typeof bootstrapDshUI, "function");
+  const children = [];
+  const document = {
+    head: { append: (...nodes) => children.push(...nodes) },
+    createElement: (tag) => ({ tag, setAttribute(name, value) { this[name] = value; } }),
+    getElementById(id) { return children.find((node) => node.id === id) || null; },
+  };
+  const first = bootstrapDshUI({ document, backend: "http://agent.test/" });
+  const second = bootstrapDshUI({ document, backend: "http://agent.test/" });
+  assert.equal(children.length, 2);
+  assert.equal(first.script, second.script);
+  assert.equal(first.script.type, "module");
+  assert.equal(first.script.src, "http://agent.test/dsh-ui/main.js");
+  assert.equal(first.style.href, "http://agent.test/dsh-ui/styles.css");
+});
