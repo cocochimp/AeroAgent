@@ -85,6 +85,50 @@ function verificationView(verify) {
   return { kind: "pending", label: "暂无校验结果" };
 }
 
+async function fetchNativeOrders({ backend = BACKEND, userId = "u_zhang", signal,
+  fetchImpl = globalThis.fetch } = {}) {
+  const response = await fetchImpl(`${String(backend).replace(/\/+$/, "")}/api/v1/orders`, {
+    signal,
+    headers: { Authorization: `Bearer demo:${userId}`, "Content-Type": "application/json" },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.detail?.message ||
+      (typeof payload?.detail === "string" ? payload.detail : `订单加载失败 (${response.status})`);
+    throw new Error(message);
+  }
+  if (!Array.isArray(payload?.orders)) throw new Error("订单响应格式不正确");
+  return payload.orders;
+}
+
+/** Session-local selected order snapshots; selecting never calls chat or paid APIs. */
+function createNativeOrderSelection({ storage = globalThis.localStorage } = {}) {
+  const values = new Map();
+  const listeners = new Set();
+  const keyFor = (userId) => `aeroagent-native-order:${userId}`;
+  function get(userId) {
+    if (values.has(userId)) return values.get(userId);
+    let value = null;
+    try {
+      const restored = JSON.parse(storage?.getItem(keyFor(userId)) || "null");
+      if (restored && typeof restored.order_id === "string") value = restored;
+    } catch { value = null; }
+    values.set(userId, value);
+    return value;
+  }
+  function select(userId, order) {
+    const value = order && typeof order.order_id === "string" ? order : null;
+    values.set(userId, value);
+    try {
+      if (value) storage?.setItem(keyFor(userId), JSON.stringify(value));
+      else storage?.removeItem?.(keyFor(userId));
+    } catch { /* In-memory selection remains available in private mode. */ }
+    listeners.forEach((listener) => listener(userId));
+  }
+  function subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+  return { get, select, subscribe };
+}
+
 const NATIVE_PAGES = [
   { id: "chat", label: "退改对话", icon: "chat", order: -30,
     description: "在 DSH 原生工作台中处理订单查询、退票与改签。" },
@@ -99,6 +143,14 @@ const NATIVE_PAGES = [
 /** Contribute AeroAgent without replacing, moving, or hiding any DSH host UI. */
 function nativeSlotsApply(ctx, React) {
   const h = React?.createElement || ((type, props, ...children) => ({ type, props: { ...props, children } }));
+  const userId = "u_zhang";
+  const selection = createNativeOrderSelection();
+  const primaryButton = { padding: "7px 14px", border: 0, borderRadius: 7,
+    background: "var(--dsw-alias-button-primary-fill)", color: "var(--dsw-alias-label-primary-foreground)",
+    font: "inherit", fontSize: 13, cursor: "pointer" };
+  const secondaryButton = { padding: "6px 11px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 7,
+    background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-primary)",
+    font: "inherit", fontSize: 12, cursor: "pointer" };
   const paths = {
     plane: ["M3 11.5 21 3l-6.5 18-3.2-7.3L3 11.5Z", "m11.3 13.7 4.2-4.2"],
     chat: ["M4 5.5h16v11H9l-5 4v-15Z", "M8 10h8M8 13h5"],
@@ -134,6 +186,95 @@ function nativeSlotsApply(ctx, React) {
         width: 30, height: 30, padding: 0, border: 0, borderRadius: 6, background: "transparent",
         color: "inherit", cursor: "pointer" } }, h(NativeIcon, { name: "observe", size: 18 }));
   }
+  function useSelectedOrder() {
+    return React.useSyncExternalStore(selection.subscribe, () => selection.get(userId), () => null);
+  }
+  function NativeSelectedOrder() {
+    const order = useSelectedOrder();
+    if (!order) return h("section", { "data-native-selected-order": "empty", style: { marginTop: 26,
+      paddingTop: 20, borderTop: "1px solid var(--dsw-alias-border-l1)" } },
+      h("h2", { style: { margin: "0 0 8px", fontSize: 16, fontWeight: 600 } }, "尚未选择客票"),
+      h("p", { style: { margin: 0, color: "var(--dsw-alias-label-secondary)", fontSize: 13,
+        lineHeight: 1.7 } }, "请从「我的订单」选择客票。选择只绑定订单，不会自动发送消息或创建案件。"));
+    const flight = order.flight || {};
+    const detail = (label, value) => h("div", { key: label, style: { display: "flex", gap: 20,
+      padding: "7px 0", fontSize: 13 } }, h("dt", { style: { width: 88, flex: "0 0 auto",
+      color: "var(--dsw-alias-label-tertiary)" } }, label), h("dd", { style: { margin: 0 } }, value));
+    return h("section", { "data-native-selected-order": order.order_id, style: { marginTop: 26,
+      paddingTop: 20, borderTop: "1px solid var(--dsw-alias-border-l1)" } },
+      h("h2", { style: { margin: "0 0 12px", fontSize: 16, fontWeight: 600 } }, "当前退改客票"),
+      h("dl", { style: { margin: 0 } },
+        detail("订单", `${order.order_id} · ${order.passenger || ""}`),
+        detail("航班", `${order.flight_no || "—"} · ${flight.origin_city || flight.origin || "—"} → ${flight.dest_city || flight.dest || "—"}`),
+        detail("出发", `${order.date || "—"} ${flight.dep_time || ""}`),
+        detail("状态", order.status || "—")),
+      h("p", { role: "status", style: { margin: "12px 0 0", color: "var(--dsw-alias-state-success-primary)",
+        fontSize: 12 } }, "已绑定客票；尚未创建案件或发送对话。"));
+  }
+  function NativeOrdersPage() {
+    const [reload, setReload] = React.useState(0);
+    const [state, setState] = React.useState({ status: "loading", orders: [], error: "" });
+    const selectedOrder = useSelectedOrder();
+    React.useEffect(() => {
+      let active = true;
+      const controller = new AbortController();
+      setState((current) => ({ ...current, status: "loading", error: "" }));
+      fetchNativeOrders({ signal: controller.signal }).then((orders) => {
+        if (active) setState({ status: "ready", orders, error: "" });
+      }).catch((error) => {
+        if (active && error?.name !== "AbortError") setState({ status: "error", orders: [], error: error.message });
+      });
+      return () => { active = false; controller.abort(); };
+    }, [reload]);
+    const header = h("header", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+      gap: 24, paddingBottom: 24, borderBottom: "1px solid var(--dsw-alias-border-l1)" } },
+      h("div", null,
+        h("h1", { style: { margin: "0 0 8px", fontSize: 24, lineHeight: 1.3, fontWeight: 600 } }, "我的订单"),
+        h("p", { style: { margin: 0, maxWidth: "66ch", color: "var(--dsw-alias-label-secondary)",
+          fontSize: 14, lineHeight: 1.6 } }, "订单来自 AeroAgent 后端。选择只绑定退改对话，不会自动发送消息或触发付费调用。")),
+      h("button", { type: "button", disabled: state.status === "loading", onClick: () => setReload((value) => value + 1),
+        style: { ...secondaryButton, flex: "0 0 auto", opacity: state.status === "loading" ? .55 : 1 } }, "刷新"));
+    let content;
+    if (state.status === "loading") content = h("p", { role: "status", style: { padding: "32px 0",
+      color: "var(--dsw-alias-label-secondary)" } }, "正在读取订单…");
+    else if (state.status === "error") content = h("div", { role: "alert", style: { paddingTop: 28 } },
+      h("h2", { style: { margin: "0 0 8px", fontSize: 16 } }, "订单加载失败"),
+      h("p", { style: { color: "var(--dsw-alias-state-error-primary)" } }, state.error),
+      h("button", { type: "button", onClick: () => setReload((value) => value + 1), style: secondaryButton }, "重试"));
+    else if (!state.orders.length) content = h("p", { style: { padding: "32px 0",
+      color: "var(--dsw-alias-label-secondary)" } }, "当前用户没有订单。");
+    else {
+      const cell = { padding: "14px 12px", borderBottom: "1px solid var(--dsw-alias-border-l1)",
+        textAlign: "left", verticalAlign: "middle", fontSize: 12, whiteSpace: "nowrap" };
+      content = h("div", { style: { overflowX: "auto", paddingTop: 18 } },
+        h("table", { style: { width: "100%", minWidth: 850, borderCollapse: "collapse" } },
+          h("thead", null, h("tr", null, ["订单 / 乘客", "航班与航线", "出发", "金额", "状态", "操作"].map((label) =>
+            h("th", { key: label, style: { ...cell, color: "var(--dsw-alias-label-tertiary)", fontWeight: 500 } }, label)))),
+          h("tbody", null, state.orders.map((order) => {
+            const flight = order.flight || {};
+            const selected = selectedOrder?.order_id === order.order_id;
+            return h("tr", { key: order.order_id, "data-native-order-row": order.order_id },
+              h("td", { style: cell }, h("div", { style: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                fontSize: 11 } }, order.order_id), h("div", { style: { marginTop: 4,
+                color: "var(--dsw-alias-label-secondary)" } }, order.passenger)),
+              h("td", { style: cell }, h("strong", { style: { fontSize: 13 } }, order.flight_no),
+                h("div", { style: { marginTop: 4, color: "var(--dsw-alias-label-secondary)" } },
+                  `${flight.origin_city || flight.origin || "—"} → ${flight.dest_city || flight.dest || "—"}`)),
+              h("td", { style: cell }, `${order.date} ${flight.dep_time || ""}`),
+              h("td", { style: { ...cell, fontVariantNumeric: "tabular-nums" } }, `¥${Number((order.fare || 0) + (order.tax || 0)).toLocaleString("zh-CN")}`),
+              h("td", { style: cell }, h("span", { style: { display: "inline-block", padding: "2px 7px",
+                border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 5, fontSize: 11 } }, order.status)),
+              h("td", { style: cell }, h("button", { type: "button", "aria-pressed": selected,
+                "aria-label": `${selected ? "继续" : "选择"}${order.flight_no}退改对话`,
+                onClick: () => { selection.select(userId, order); ctx.layout.selectPanel("aeroagent-chat"); },
+                style: selected ? primaryButton : secondaryButton }, selected ? "继续对话" : "选择并对话")));
+          }))));
+    }
+    return h("main", { "data-aeroagent-native-page": "orders", style: { boxSizing: "border-box", height: "100%",
+      overflow: "auto", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", font: "inherit" } },
+      h("div", { style: { boxSizing: "border-box", maxWidth: 1180, margin: "0 auto",
+        padding: "32px clamp(24px, 4vw, 48px) 48px" } }, header, content));
+  }
 
   ctx.slots.inject("sidebar.brand.mark", () => ctx.slots.register({
     name: "sidebar.brand.mark", id: "dsh-plugin-aeroagent",
@@ -161,18 +302,20 @@ function nativeSlotsApply(ctx, React) {
           h("section", { style: { paddingTop: 28 } },
             h("h2", { style: { margin: "0 0 10px", fontSize: 16, fontWeight: 600 } }, "DSH 宿主保持不变"),
             h("p", { style: { margin: "0 0 20px", maxWidth: "68ch", color: "var(--dsw-alias-label-secondary)",
-              fontSize: 14, lineHeight: 1.75 } }, "左侧工作区、会话、More、设置和原生对话均继续由 DSH 承载。当前切片只确认集成方式与视觉方向，尚未接回业务操作。"),
+              fontSize: 14, lineHeight: 1.75 } }, page.id === "chat"
+              ? "左侧工作区、会话、More 和设置继续由 DSH 承载。选择客票只会绑定后续退改对话，不会自动发送消息或创建案件。"
+              : "左侧工作区、会话、More、设置和原生对话均继续由 DSH 承载。当前模块仅确认原生集成方式，业务操作将在后续切片接入。"),
             h("ul", { style: { margin: 0, paddingLeft: 20, color: "var(--dsw-alias-label-secondary)",
               fontSize: 13, lineHeight: 2 } },
               h("li", null, "AeroAgent 导航和页面使用 DSH 官方 slots"),
               h("li", null, "没有 iframe、独立应用框架或隐藏宿主侧栏"),
               h("li", null, "执行观测入口位于 DSH 原生对话顶部")),
+            page.id === "chat" ? h(NativeSelectedOrder) : null,
             page.id === "chat" ? h("button", { type: "button", onClick: () => ctx.layout.selectPanel(null),
-              style: { marginTop: 24, padding: "7px 14px", border: 0, borderRadius: 7,
-                background: "var(--dsw-alias-button-primary-fill)", color: "var(--dsw-alias-label-primary-foreground)",
-                font: "inherit", fontSize: 13, cursor: "pointer" } }, "打开 DSH 原生对话") : null)));
+              style: { ...primaryButton, marginTop: 24 } }, "打开 DSH 原生对话") : null)));
     }
-    ctx.slots.inject("main", () => ctx.slots.register({ name: "main", key: panelId }, NativePage));
+    ctx.slots.inject("main", () => ctx.slots.register({ name: "main", key: panelId },
+      page.id === "orders" ? NativeOrdersPage : NativePage));
     ctx.slots.inject("sidebar.panellist", () => ctx.slots.register({
       name: "sidebar.panellist", id: panelId, order: page.order, label: () => page.label,
     }, ({ size = 20 }) => h(NativeIcon, { name: page.icon, size })));
@@ -221,7 +364,8 @@ const inject = ["slots", "layout", "sidebarRight", "sidebarRightTabs"];
 
 globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
   { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing,
-    quoteStateAfter, followAction, traceEventKey, verificationView, quoteCardState, bootstrapDshUI, nativeSlotsApply });
+    quoteStateAfter, followAction, traceEventKey, verificationView, quoteCardState, bootstrapDshUI, nativeSlotsApply,
+    fetchNativeOrders, createNativeOrderSelection });
 if (typeof window !== "undefined" && window.__ModuleLoader__ && !globalThis.__AERO_DSH_MODULE_REGISTERED) {
   window.__ModuleLoader__.load({ id: "dsh-plugin-aeroagent", factory: (require) => ({
     inject,
