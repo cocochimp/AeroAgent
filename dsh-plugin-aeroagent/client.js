@@ -1,7 +1,30 @@
 // AeroAgent DSH 客户端插件：零裸依赖的浏览器 ESM，以 DOM 注入方式把退改签业务面板嵌入宿主。
-const BACKEND = window.AEROAGENT_BACKEND_URL || "http://127.0.0.1:8000";
+const BACKEND = globalThis.AEROAGENT_BACKEND_URL || "http://127.0.0.1:8000";
 const TOKEN = "demo:u_zhang";
 const ADMIN_TOKEN = "demo-admin:u_zhang";
+const keyCache = new Map();
+
+export function parseAeroAgentQuote(text) {
+  try {
+    const value = JSON.parse(text.trim());
+    return value && typeof value.quote_id === "string" && typeof value.case_id === "string" &&
+      ["CHANGE", "REFUND"].includes(value.action) ? value : null;
+  } catch { return null; }
+}
+
+export function orderView(order) {
+  const flight = order.flight || {};
+  return { ...order, route: `${flight.origin || "—"} → ${flight.dest || "—"}`,
+    flightStatus: flight.status || "unknown", delayMinutes: flight.delay_min || 0 };
+}
+
+export function requestKeys(quoteId) {
+  if (!keyCache.has(quoteId)) {
+    const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    keyCache.set(quoteId, { confirmationId: `confirm-${id}`, idempotencyKey: `ticket-${id}` });
+  }
+  return keyCache.get(quoteId);
+}
 
 const css = `
 .aero-dock{display:flex;gap:8px;overflow-x:auto;padding:8px 2px}
@@ -61,8 +84,11 @@ async function buildDock() {
   const wrap = el("div", {}, el("div", { class: "aero-note" }, "AeroAgent 订单上下文（点选后自动填入 @订单号）"), dock);
   try {
     const data = await api("/api/v1/orders");
-    for (const o of (data.orders || []).slice(0, 8)) {
-      const kind = o.flight_status === "cancelled" ? "cancel" : o.flight_status === "delayed" ? "delay" : "ok";
+    for (const raw of (data.orders || []).slice(0, 8)) {
+      const o = orderView(raw);
+      const kind = o.flightStatus === "cancelled" ? "cancel" : o.flightStatus === "delayed" ? "delay" : "ok";
+      const flightLabel = o.flightStatus === "cancelled" ? "已取消" :
+        o.flightStatus === "delayed" ? `延误 ${o.delayMinutes} 分` : "正常";
       const card = el("div", {
         class: "aero-card",
         onclick: () => {
@@ -74,9 +100,9 @@ async function buildDock() {
       },
         el("div", { style: "display:flex;justify-content:space-between" },
           el("span", { class: "fno" }, o.flight_no),
-          el("span", { class: `aero-chip ${kind}` }, o.flight_status_label || o.flight_status || "")),
-        el("div", { style: "font-size:13px;margin:2px 0" }, `${o.origin} → ${o.dest}`),
-        el("div", { class: "aero-note" }, `${o.order_id} · ${o.status_label || o.status}`));
+          el("span", { class: `aero-chip ${kind}` }, flightLabel)),
+        el("div", { style: "font-size:13px;margin:2px 0" }, o.route),
+        el("div", { class: "aero-note" }, `${o.order_id} · ${o.status}`));
       dock.append(card);
     }
   } catch (e) {
@@ -99,10 +125,10 @@ function quoteCard(payload, host) {
       confirm.disabled = true;
       confirm.textContent = "办理中…";
       try {
-        const key = `dsh-${Date.now()}`;
+        const keys = requestKeys(payload.quote_id);
         const res = await api(`/api/v1/quotes/${payload.quote_id}/confirm`, TOKEN, {
           method: "POST",
-          body: JSON.stringify({ confirmation_id: key, idempotency_key: key }),
+          body: JSON.stringify({ confirmation_id: keys.confirmationId, idempotency_key: keys.idempotencyKey }),
         });
         card.append(el("div", { class: "aero-note" }, `已受理：operation ${res.operation_id || res.status}`));
         refreshPanel(payload.case_id);
@@ -124,14 +150,14 @@ function upgradeQuoteFences(root) {
     const match = text.match(/```aeroagent-quote\s*([\s\S]*?)```/) || (text.trim().startsWith("{") && text.includes("quote_id") ? [null, text] : null);
     if (!match || code.__aeroDone) continue;
     code.__aeroDone = true;
-    try {
-      quoteCard(JSON.parse(match[1]), code.closest("pre") || code);
-    } catch { /* 非报价块忽略 */ }
+    const payload = parseAeroAgentQuote(match[1]);
+    if (payload) quoteCard(payload, code.closest("pre") || code);
   }
 }
 
-const panel = el("div", { class: "aero-panel" });
+let panel = null;
 async function refreshPanel(caseId) {
+  if (!panel) return;
   panel.replaceChildren(el("h4", null, "AeroAgent 业务面板"));
   if (!caseId) { panel.append(el("div", { class: "aero-note" }, "先在对话中发起一次退改诉求，面板会展示该案件的流程/检索/记忆/校验。")); return; }
   try {
@@ -150,6 +176,7 @@ let lastCaseId = null;
 function mount() {
   if (document.getElementById("aero-style")) return;
   document.head.append(Object.assign(document.createElement("style"), { id: "aero-style", textContent: css }));
+  panel = el("div", { class: "aero-panel" });
   const fab = el("button", { class: "aero-fab", onclick: () => { panel.classList.toggle("on"); refreshPanel(lastCaseId); } }, "AeroAgent 面板");
   document.body.append(panel, fab);
   refreshPanel(null);
@@ -174,8 +201,10 @@ function mount() {
   window.__AERO_CLIENT_LOADED = true;
 }
 
-if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount);
-else mount();
+if (typeof document !== "undefined" && typeof window !== "undefined") {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount);
+  else mount();
+}
 
 export const inject = [];
 export function apply() { /* 客户端插件以 DOM 注入方式工作，无需服务端注册 */ }

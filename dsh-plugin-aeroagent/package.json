@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "type": "module",
   "main": "index.js",
+  "scripts": {
+    "test": "node --test client.test.mjs"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
