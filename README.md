@@ -1,10 +1,10 @@
-# 机票退改签 Agent（MVP）
+# AeroAgent：机票退改签Agent
 
 基于 LangGraph 的机票改签/退票智能助手：理解乘客诉求 → 检索退改规则 → 运价引擎算钱 → 生成方案 → 校验防幻觉 → 乘客确认后办理。
 
 > 所有航司、航班、订单、用户与规则均为**虚构数据**，由 `air_agent/seed.py` 按「今天」确定性生成，仅用于演示。
 
-![Uploading agent (1).png…]()
+<img width="4536" height="3224" alt="agent (1)" src="https://github.com/user-attachments/assets/5f58f61a-890b-4012-9c46-1fe54d7f2c2c" />
 
 
 ## 快速启动
