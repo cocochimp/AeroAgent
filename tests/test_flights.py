@@ -78,3 +78,19 @@ def test_listing_router_is_registered_and_requires_auth():
     response = TestClient(app).get("/api/v1/flights")
 
     assert response.status_code == 401
+
+
+def test_listing_marks_departed_flights_unavailable(tmp_path, monkeypatch):
+    async def check(api, factory):
+        from app import config as S
+
+        async with factory() as session:
+            past = await session.scalar(select(FlightRecord).where(
+                FlightRecord.date < S.now().date().isoformat()).order_by(FlightRecord.date))
+        result = await api.list_flights(USER, date=past.date)
+        assert result["flights"]
+        for item in result["flights"]:
+            assert item["available"] is False
+            assert item["unavailable_reason"] in {"FLIGHT_DEPARTED", "FLIGHT_CANCELLED", "FLIGHT_NOT_BOOKABLE"}
+
+    _run_with_db(tmp_path, monkeypatch, check)

@@ -262,6 +262,49 @@ async function fetchNativeOrders({ backend = BACKEND, userId = "u_zhang", signal
   return payload.orders;
 }
 
+async function fetchNativeFlights({ query = {}, userId = "u_zhang", signal,
+  fetchImpl = globalThis.fetch } = {}) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (String(value || "").trim()) params.set(key, String(value).trim());
+  const suffix = params.toString();
+  const payload = await fetchNativeV1({ path: `/flights${suffix ? `?${suffix}` : ""}`, userId, signal, fetchImpl });
+  if (!Array.isArray(payload?.flights)) throw new Error("航班响应格式不正确");
+  return payload.flights;
+}
+
+async function createNativeBooking({ flight, fareProduct, passenger, userId = "u_zhang",
+  fetchImpl = globalThis.fetch } = {}) {
+  return fetchNativeV1({ path: "/bookings", method: "POST", userId, fetchImpl,
+    body: { flight_no: flight.flight_no, date: flight.date, fare_product: fareProduct,
+      passenger: String(passenger || "").trim() } });
+}
+
+async function payNativeBooking({ bookingId, idempotencyKey, userId = "u_zhang",
+  fetchImpl = globalThis.fetch } = {}) {
+  return fetchNativeV1({ path: `/bookings/${encodeURIComponent(bookingId)}/pay`, method: "POST", userId, fetchImpl,
+    body: { idempotency_key: idempotencyKey } });
+}
+
+async function fetchNativeWatches({ userId = "u_zhang", signal, fetchImpl = globalThis.fetch } = {}) {
+  const payload = await fetchNativeV1({ path: "/watches", userId, signal, fetchImpl });
+  if (!Array.isArray(payload?.watches)) throw new Error("监控响应格式不正确");
+  return payload;
+}
+
+async function createNativeWatch({ watch, userId = "u_zhang", fetchImpl = globalThis.fetch } = {}) {
+  return fetchNativeV1({ path: "/watches", method: "POST", userId, fetchImpl, body: watch });
+}
+
+async function evaluateNativeWatch({ watchId, userId = "u_zhang", fetchImpl = globalThis.fetch } = {}) {
+  return fetchNativeV1({ path: `/watches/${encodeURIComponent(watchId)}/evaluate`, method: "POST", userId, fetchImpl });
+}
+
+async function fetchNativeAlerts({ userId = "u_zhang", signal, fetchImpl = globalThis.fetch } = {}) {
+  const payload = await fetchNativeV1({ path: "/watches/alerts", userId, signal, fetchImpl });
+  if (!Array.isArray(payload?.alerts)) throw new Error("提醒响应格式不正确");
+  return payload;
+}
+
 async function fetchNativeV1({ backend = BACKEND, path, method = "GET", body, userId = "u_zhang",
   admin = false, signal, fetchImpl = globalThis.fetch } = {}) {
   const response = await fetchImpl(`${String(backend).replace(/\/+$/, "")}/api/v1${path}`, {
@@ -1378,6 +1421,228 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
           fontSize: 11, lineHeight: 1.5 } }, notice)
         : null);
   }
+  const depotCell = { padding: "10px 12px", borderBottom: "1px solid var(--dsw-alias-border-l1)",
+    fontSize: 12, verticalAlign: "middle", textAlign: "left" };
+  const depotHead = { ...depotCell, color: "var(--dsw-alias-label-tertiary)", fontSize: 10,
+    fontWeight: 500, letterSpacing: ".04em" };
+  const depotNote = { margin: "0 0 16px", color: "var(--dsw-alias-label-secondary)", fontSize: 13, lineHeight: 1.6 };
+  function depotFrame(page, title, description, ...content) {
+    return h("main", { "data-aeroagent-native-page": page, style: { boxSizing: "border-box", height: "100%",
+      overflow: "auto", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)" } },
+      h("div", { style: { boxSizing: "border-box", maxWidth: 1080, margin: "0 auto",
+        padding: "28px clamp(20px, 4vw, 40px) 48px" } },
+        h("header", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+          gap: 20, paddingBottom: 18, borderBottom: "1px solid var(--dsw-alias-border-l1)" } },
+          h("div", null, h("h1", { style: { margin: "0 0 6px", fontSize: 22, fontWeight: 600 } }, title),
+            h("p", { style: { ...depotNote, margin: 0, maxWidth: "60ch" } }, description)),
+          h("span", { style: { flex: "0 0 auto", padding: "3px 8px", border: "1px solid var(--dsw-alias-border-l2)",
+            borderRadius: 6, color: "var(--dsw-alias-label-tertiary)", fontSize: 10 } }, "本地 SQL 快照")),
+        ...content));
+  }
+  function NativeListingPage() {
+    const { userId, user } = useNativeUser();
+    const [origin, setOrigin] = React.useState("");
+    const [dest, setDest] = React.useState("");
+    const [date, setDate] = React.useState("");
+    const [passenger, setPassenger] = React.useState(user?.name || "");
+    const [flights, setFlights] = React.useState([]);
+    const [state, setState] = React.useState({ status: "loading", error: "" });
+    const [choice, setChoice] = React.useState({});
+    const [booking, setBooking] = React.useState(null);
+    const [busy, setBusy] = React.useState(false);
+    const [notice, setNotice] = React.useState(null);
+    const [reload, setReload] = React.useState(0);
+    React.useEffect(() => { setPassenger(user?.name || ""); }, [userId]);
+    React.useEffect(() => {
+      let active = true;
+      const controller = new AbortController();
+      setState((current) => ({ ...current, status: "loading", error: "" }));
+      fetchNativeFlights({ query: { origin, dest, date }, userId, signal: controller.signal, fetchImpl })
+        .then((rows) => { if (active) { setFlights(rows); setState({ status: "ready", error: "" }); } })
+        .catch((failure) => { if (active && failure?.name !== "AbortError") setState({ status: "error", error: failure.message }); });
+      return () => { active = false; controller.abort(); };
+    }, [userId, origin, dest, date, reload]);
+    async function reserve(flight) {
+      const fare = choice[`${flight.flight_no}:${flight.date}`] || (flight.fares.find((item) => item.available) || {}).fare_product;
+      if (!fare) { setNotice({ kind: "error", text: "该航班没有可预订的票价产品。" }); return; }
+      if (!passenger.trim()) { setNotice({ kind: "error", text: "请填写乘客姓名。" }); return; }
+      setBusy(true); setNotice(null);
+      try {
+        const created = await createNativeBooking({ flight, fareProduct: fare, passenger, userId, fetchImpl });
+        setBooking({ ...created, idempotencyKey: `pay-${Date.now()}-${Math.random().toString(16).slice(2, 10)}` });
+        setNotice({ kind: "info", text: "已创建待支付订单；模拟支付后才会出票。" });
+      } catch (failure) {
+        setNotice({ kind: "error", text: failure.message });
+      } finally { setBusy(false); }
+    }
+    async function pay() {
+      if (!booking) return;
+      setBusy(true);
+      try {
+        const paid = await payNativeBooking({ bookingId: booking.booking_id,
+          idempotencyKey: booking.idempotencyKey, userId, fetchImpl });
+        setBooking({ ...booking, ...paid });
+        setNotice({ kind: "success", text: `已出票：${paid.ticket_no}（模拟支付，不涉及真实资金）` });
+      } catch (failure) {
+        setNotice({ kind: "error", text: failure.message });
+      } finally { setBusy(false); }
+    }
+    let body;
+    if (state.status === "loading" && !flights.length) body = learningState("loading", "正在读取航班快照…");
+    else if (state.status === "error") body = learningState("error", "航班加载失败", state.error,
+      h("button", { type: "button", onClick: () => setReload((value) => value + 1), style: secondaryButton }, "重试"));
+    else if (!flights.length) body = learningState("empty", "没有匹配航班", "调整航线或日期后重新查询。");
+    else body = h("table", { style: { width: "100%", borderCollapse: "collapse", marginTop: 4 } },
+      h("thead", null, h("tr", null, ["航班", "航线", "日期 / 时间", "票价产品", "总价", "状态", ""].map((label) =>
+        h("th", { key: label, style: depotHead }, label)))),
+      h("tbody", null, flights.map((flight) => {
+        const key = `${flight.flight_no}:${flight.date}`;
+        const fares = flight.fares || [];
+        const selectedFare = choice[key] || (fares.find((fare) => fare.available) || fares[0] || {}).fare_product;
+        const current = fares.find((fare) => fare.fare_product === selectedFare) || {};
+        return h("tr", { key, "data-native-flight-row": flight.flight_no },
+          h("td", { style: depotCell }, h("strong", null, flight.flight_no),
+            h("div", { style: { marginTop: 3, color: "var(--dsw-alias-label-tertiary)", fontSize: 10 } },
+              flight.airline || "—")),
+          h("td", { style: depotCell }, `${flight.origin_city || flight.origin} → ${flight.dest_city || flight.dest}`),
+          h("td", { style: depotCell }, `${flight.date} ${flight.dep_time || ""}`),
+          h("td", { style: depotCell }, h("select", { "aria-label": `选择${flight.flight_no}票价产品`, value: selectedFare,
+            onChange: (event) => setChoice({ ...choice, [key]: event.target.value }),
+            style: { ...nativeInputStyle, padding: "4px 7px" } }, fares.map((fare) =>
+            h("option", { key: fare.fare_product, value: fare.fare_product, disabled: !fare.available },
+              `${fare.fare_product} · ¥${fare.total}`)))),
+          h("td", { style: { ...depotCell, fontVariantNumeric: "tabular-nums" } }, current.total ? `¥${current.total}` : "—"),
+          h("td", { style: depotCell }, flight.available
+            ? h("span", { style: { color: "var(--dsw-alias-state-success-primary)" } }, "可预订")
+            : h("span", { style: { color: "var(--dsw-alias-label-tertiary)" } }, flight.unavailable_reason || "不可预订")),
+          h("td", { style: depotCell }, h("button", { type: "button", disabled: busy || !flight.available,
+            onClick: () => reserve(flight), style: { ...secondaryButton, padding: "4px 9px", fontSize: 11 } }, "预订")));
+      })));
+    return depotFrame("listing", "Listing", "按航线、日期检索本地航班快照；预订后先进入待支付，模拟支付成功才出票。",
+      h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, padding: "16px 0" } },
+        h("input", { "aria-label": "出发地", placeholder: "出发地代码，如 HGH", value: origin,
+          onChange: (event) => setOrigin(event.target.value.toUpperCase()), style: { ...nativeInputStyle, flex: "1 1 120px" } }),
+        h("input", { "aria-label": "目的地", placeholder: "目的地代码，如 PEK", value: dest,
+          onChange: (event) => setDest(event.target.value.toUpperCase()), style: { ...nativeInputStyle, flex: "1 1 120px" } }),
+        h("input", { "aria-label": "航班日期", type: "date", value: date,
+          onChange: (event) => setDate(event.target.value), style: { ...nativeInputStyle, flex: "0 1 160px" } }),
+        h("input", { "aria-label": "乘客姓名", placeholder: "乘客姓名", value: passenger,
+          onChange: (event) => setPassenger(event.target.value), style: { ...nativeInputStyle, flex: "1 1 140px" } }),
+        h("button", { type: "button", onClick: () => setReload((value) => value + 1), style: primaryButton }, "查询")),
+      notice ? h("p", { role: notice.kind === "error" ? "alert" : "status", style: { margin: "0 0 12px",
+        color: notice.kind === "error" ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-secondary)",
+        fontSize: 12 } }, notice.text) : null,
+      booking ? h("div", { "data-native-booking": booking.status, style: { display: "flex", flexWrap: "wrap",
+        alignItems: "center", gap: 12, padding: "12px 14px", marginBottom: 14, border: "1px solid var(--dsw-alias-border-l2)",
+        borderRadius: 8, background: "var(--dsw-alias-bg-layer-1)", fontSize: 12 } },
+        h("strong", null, booking.status === "ISSUED" ? `已出票 ${booking.ticket_no}` : `待支付 ¥${booking.total}`),
+        h("span", { style: { color: "var(--dsw-alias-label-secondary)" } },
+          `${booking.flight_no} ${booking.date} · ${booking.passenger}`),
+        booking.status === "PENDING_PAYMENT" ? h("button", { type: "button", disabled: busy, onClick: pay,
+          style: { ...primaryButton, padding: "5px 12px", fontSize: 12 } }, busy ? "支付中…" : "模拟支付") : null,
+        h("button", { type: "button", onClick: () => { setBooking(null); setNotice(null); },
+          style: { ...secondaryButton, padding: "5px 10px", fontSize: 11 } }, "关闭")) : null,
+      body);
+  }
+  function NativeMonitorPage() {
+    const { userId } = useNativeUser();
+    const [form, setForm] = React.useState({ flight_no: "", date: "", fare_product: "Y", target_total: "", percentage_threshold: "" });
+    const [watches, setWatches] = React.useState([]);
+    const [alerts, setAlerts] = React.useState([]);
+    const [state, setState] = React.useState({ status: "loading", error: "" });
+    const [notice, setNotice] = React.useState(null);
+    const [busy, setBusy] = React.useState(false);
+    const [reload, setReload] = React.useState(0);
+    React.useEffect(() => {
+      let active = true;
+      const controller = new AbortController();
+      setState({ status: "loading", error: "" });
+      Promise.all([fetchNativeWatches({ userId, signal: controller.signal, fetchImpl }),
+        fetchNativeAlerts({ userId, signal: controller.signal, fetchImpl })])
+        .then(([watchData, alertData]) => {
+          if (!active) return;
+          setWatches(watchData.watches || []);
+          setAlerts(alertData.alerts || []);
+          setState({ status: "ready", error: "" });
+        })
+        .catch((failure) => { if (active && failure?.name !== "AbortError") setState({ status: "error", error: failure.message }); });
+      return () => { active = false; controller.abort(); };
+    }, [userId, reload]);
+    async function submit() {
+      const payload = { flight_no: form.flight_no.trim().toUpperCase(), date: form.date.trim(),
+        fare_product: form.fare_product.trim() };
+      if (form.target_total) payload.target_total = Number(form.target_total);
+      if (form.percentage_threshold) payload.percentage_threshold = Number(form.percentage_threshold);
+      if (!payload.target_total && !payload.percentage_threshold) {
+        setNotice({ kind: "error", text: "目标总价和降幅百分比至少填写一项。" }); return;
+      }
+      setBusy(true); setNotice(null);
+      try {
+        await createNativeWatch({ watch: payload, userId, fetchImpl });
+        setNotice({ kind: "success", text: "监控已创建，基线取当前服务端票价。" });
+        setForm({ ...form, flight_no: "", date: "", target_total: "", percentage_threshold: "" });
+        setReload((value) => value + 1);
+      } catch (failure) {
+        setNotice({ kind: "error", text: failure.message });
+      } finally { setBusy(false); }
+    }
+    async function evaluate(watchId) {
+      setBusy(true);
+      try {
+        const result = await evaluateNativeWatch({ watchId, userId, fetchImpl });
+        setNotice({ kind: "success", text: result.alert ? "已命中阈值，提醒已写入站内历史。"
+          : result.deduplicated_alert_id ? "价格已命中，重复提醒已去重。" : "已评估，当前价格未达到阈值。" });
+        setReload((value) => value + 1);
+      } catch (failure) {
+        setNotice({ kind: "error", text: failure.message });
+      } finally { setBusy(false); }
+    }
+    return depotFrame("monitor", "低价监控", "监控保存在服务端 SQL；定时评估命中后只写入 DSH 站内提醒，不发送外部通知。",
+      h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, padding: "16px 0" } },
+        h("input", { "aria-label": "监控航班号", placeholder: "航班号 MU5101", value: form.flight_no,
+          onChange: (event) => setForm({ ...form, flight_no: event.target.value.toUpperCase() }), style: { ...nativeInputStyle, flex: "1 1 120px" } }),
+        h("input", { "aria-label": "监控日期", type: "date", value: form.date,
+          onChange: (event) => setForm({ ...form, date: event.target.value }), style: { ...nativeInputStyle, flex: "0 1 150px" } }),
+        h("select", { "aria-label": "监控票价产品", value: form.fare_product,
+          onChange: (event) => setForm({ ...form, fare_product: event.target.value }), style: { ...nativeInputStyle, flex: "0 1 150px" } },
+          ["Y", "Y_DISCOUNT", "SPECIAL", "C", "F", "GROUP"].map((value) => h("option", { key: value, value }, value))),
+        h("input", { "aria-label": "目标总价", inputMode: "numeric", placeholder: "目标总价", value: form.target_total,
+          onChange: (event) => setForm({ ...form, target_total: event.target.value }), style: { ...nativeInputStyle, flex: "1 1 110px" } }),
+        h("input", { "aria-label": "降幅百分比", inputMode: "numeric", placeholder: "降幅 %", value: form.percentage_threshold,
+          onChange: (event) => setForm({ ...form, percentage_threshold: event.target.value }), style: { ...nativeInputStyle, flex: "1 1 100px" } }),
+        h("button", { type: "button", disabled: busy, onClick: submit, style: primaryButton }, "创建监控")),
+      notice ? h("p", { role: notice.kind === "error" ? "alert" : "status", style: { margin: "0 0 12px",
+        color: notice.kind === "error" ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-secondary)",
+        fontSize: 12 } }, notice.text) : null,
+      state.status === "error" ? learningState("error", "监控加载失败", state.error,
+        h("button", { type: "button", onClick: () => setReload((value) => value + 1), style: secondaryButton }, "重试"))
+        : state.status === "loading" ? learningState("loading", "正在读取监控…")
+        : h(React.Fragment, null,
+          learningSection("我的监控", watches.length ? h("table", { style: { width: "100%", borderCollapse: "collapse" } },
+            h("thead", null, h("tr", null, ["航班", "日期", "票种", "基线", "阈值", "最近评估", ""].map((label) =>
+              h("th", { key: label, style: depotHead }, label)))),
+            h("tbody", null, watches.map((watch) => h("tr", { key: watch.watch_id, "data-native-watch-row": watch.watch_id },
+              h("td", { style: depotCell }, watch.flight_no),
+              h("td", { style: depotCell }, watch.date),
+              h("td", { style: depotCell }, watch.fare_product),
+              h("td", { style: depotCell }, `¥${watch.baseline_total}`),
+              h("td", { style: depotCell }, [watch.target_total ? `≤¥${watch.target_total}` : null,
+                watch.percentage_threshold ? `降${watch.percentage_threshold}%` : null].filter(Boolean).join(" / ")),
+              h("td", { style: depotCell }, watch.last_evaluated_at ? new Date(watch.last_evaluated_at).toLocaleString("zh-CN") : "尚未评估"),
+              h("td", { style: depotCell }, h("button", { type: "button", disabled: busy,
+                onClick: () => evaluate(watch.watch_id), style: { ...secondaryButton, padding: "4px 9px", fontSize: 11 } }, "立即评估"))))))
+            : learningState("empty", "还没有监控", "填写航班、日期和目标价即可创建。")),
+          learningSection("站内提醒", alerts.length
+            ? h("ul", { style: { listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 } },
+              alerts.slice(0, 20).map((alert) => h("li", { key: alert.alert_id,
+                "data-native-alert": alert.alert_id, style: { padding: "10px 12px",
+                  border: "1px solid var(--dsw-alias-border-l1)", borderRadius: 7,
+                  background: "var(--dsw-alias-bg-layer-1)", fontSize: 12 } },
+                h("strong", null, alert.message || `${alert.flight_no} 达到目标价`),
+                h("div", { style: { marginTop: 3, color: "var(--dsw-alias-label-tertiary)", fontSize: 10 } },
+                  new Date(alert.created_at).toLocaleString("zh-CN")))))
+            : learningState("empty", "暂无提醒", "评估命中阈值后会在这里显示，同一价格只提醒一次。"))));
+  }
   function learningPage(id, title, description, actions, ...content) {
     return h("main", { "data-aeroagent-native-page": id, style: { boxSizing: "border-box", height: "100%",
       overflow: "auto", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", font: "inherit" } },
@@ -1769,6 +2034,8 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
     }
     ctx.slots.inject("main", () => ctx.slots.register({ name: "main", key: panelId },
       page.id === "orders" ? NativeOrdersPage
+        : page.id === "listing" ? NativeListingPage
+        : page.id === "monitor" ? NativeMonitorPage
         : page.id === "more" ? NativeExtrasPage
         : page.id === "chat" ? NativeChatRedirect : NativePage));
     ctx.slots.inject("sidebar.panellist", () => ctx.slots.register({
@@ -1830,7 +2097,8 @@ globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
     nativeOrderBindingStatus, openNativeAeroConversation, NATIVE_DEMO_USERS, createNativeUserStore, createNativeWatchStore, scrollNativeChatToLatest,
     fetchNativeAdmin, fetchNativeRules, fetchNativeEvaluation, startNativeEvaluation, fetchNativeDemoData,
     filterNativeEvaluationCases, isNativeEvaluationTerminal, installNativeBrandSkin,
-    nativeActionableQuotes, nativeCasePhase, nativeOperationSummary });
+    nativeActionableQuotes, nativeCasePhase, nativeOperationSummary, fetchNativeFlights, createNativeBooking,
+    payNativeBooking, fetchNativeWatches, createNativeWatch, evaluateNativeWatch, fetchNativeAlerts });
 if (typeof window !== "undefined" && window.__ModuleLoader__ && !globalThis.__AERO_DSH_MODULE_REGISTERED) {
   window.__ModuleLoader__.load({ id: "dsh-plugin-aeroagent", factory: (require) => ({
     inject,

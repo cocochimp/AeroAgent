@@ -188,8 +188,9 @@ async def evaluate_watch(watch_id: str, user_id: str | None = None, *, source: s
                         alert_id=alert_id, watch_id=watch.watch_id, observation_id=observation.observation_id,
                         user_id=watch.user_id, trigger=trigger, dedupe_key=dedupe_key,
                         baseline_total=watch.baseline_total, observed_total=total, currency=watch.currency,
-                        message=(f"{watch.flight_no} {watch.date} {watch.fare_product} 总价降至 "
-                                 f"{total} {watch.currency}（基线 {watch.baseline_total}）"), created_at=now)
+                        message=(f"{watch.flight_no} {watch.date} {watch.fare_product} "
+                                 f"总价{'降至' if total < watch.baseline_total else '达到'} {total} "
+                                 f"{watch.currency}（基线 {watch.baseline_total}）"), created_at=now)
                     try:
                         # 候选必须在保存点内加入：失败时回滚只吞掉提醒，观测与评估时间仍要提交。
                         async with session.begin_nested():

@@ -14,6 +14,7 @@ from app.adapters.outbound.postgres.models import (
     OrderRecord,
     utcnow,
 )
+from app import config as S
 from app.adapters.outbound.sqlite.runtime_projection import sync_agent_projection
 from app.application.seed import PRODUCTS, TAX
 
@@ -79,6 +80,8 @@ async def create_booking(user_id: str, flight_no: str, date: str, fare_product: 
             raise BookingError("FLIGHT_NOT_FOUND", "航班不存在", 404)
         if flight.status != "scheduled":
             raise BookingError("FLIGHT_UNAVAILABLE", "该航班当前不可预订")
+        if flight.date < S.now().date().isoformat():
+            raise BookingError("FLIGHT_DEPARTED", "该航班的起飞日期已过，无法预订")
         if fare_product not in (flight.fares or {}):
             raise BookingError("FARE_UNAVAILABLE", "该航班没有所选票价产品")
         fare = int(flight.fares[fare_product])
@@ -90,7 +93,10 @@ async def create_booking(user_id: str, flight_no: str, date: str, fare_product: 
                             paid_at=None)
         attempt = BookingAttemptRecord(booking_id=booking_id, order_id=order_id, user_id=user_id,
                                        payment_idempotency_key=None, created_at=now, updated_at=now)
-        session.add_all([order, attempt])
+        # 先写订单再写预订：booking_attempts 有指向 orders 的外键，而工作单元不会按裸外键排序。
+        session.add(order)
+        await session.flush()
+        session.add(attempt)
         session.add(AuditRecord(audit_id=f"audit_{uuid.uuid4().hex}", actor_id=user_id,
                                 action="booking.created", resource_id=booking_id,
                                 payload={"order_id": order_id, "flight_no": flight.flight_no,

@@ -14,6 +14,10 @@ router = APIRouter(prefix="/api/v1", tags=["flights"])
 
 def _availability(flight: FlightRecord, fares: list[dict]) -> tuple[bool, str | None]:
     """把航班和票价快照映射为稳定的可预订状态；不代表实时库存。"""
+    from app import config as S
+
+    if flight.date < S.now().date().isoformat():
+        return False, "FLIGHT_DEPARTED"
     if flight.status == "cancelled":
         return False, "FLIGHT_CANCELLED"
     if flight.status != "scheduled":

@@ -23,13 +23,21 @@ def _run_with_db(tmp_path, monkeypatch, callback):
         from app.application import booking as service
 
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'bookings.db'}")
+        from sqlalchemy import event
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _fk_on(dbapi_connection, _):
+            dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
         factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         async with factory() as session:
             await seed_demo_data(session, force=True)
+            from app import config as S
             flight = await session.scalar(select(FlightRecord).where(
-                FlightRecord.status == "scheduled", FlightRecord.fares.is_not(None)))
+                FlightRecord.status == "scheduled", FlightRecord.fares.is_not(None),
+                FlightRecord.date >= S.now().date().isoformat()).order_by(FlightRecord.date))
             selected = (flight.flight_no, flight.date, flight.fares["Y"])
         monkeypatch.setattr(service, "SessionFactory", factory)
         projections = []
@@ -254,5 +262,24 @@ def test_payment_revalidates_flight_availability(tmp_path, monkeypatch):
             order = await session.get(OrderRecord, created["order_id"])
         assert order.status == "PENDING_PAYMENT", "取消的航班不能出票"
         assert order.ticket_no == ""
+
+    _run_with_db(tmp_path, monkeypatch, check)
+
+
+def test_booking_rejects_a_departed_flight(tmp_path, monkeypatch):
+    async def check(api, _, factory, selected, projections):
+        from app import config as S
+
+        async with factory() as session:
+            past = await session.scalar(select(FlightRecord).where(
+                FlightRecord.date < S.now().date().isoformat(),
+                FlightRecord.status == "scheduled", FlightRecord.fares.is_not(None)).order_by(FlightRecord.date))
+        assert past is not None
+        with pytest.raises(HTTPException) as rejected:
+            await api.create_booking(api.BookingCreateRequest(
+                flight_no=past.flight_no, date=past.date, fare_product="Y", passenger="王五"), USER)
+        assert rejected.value.status_code == 409
+        assert rejected.value.detail["code"] == "FLIGHT_DEPARTED"
+        assert projections == [], "被拒绝的预订不应刷新投影"
 
     _run_with_db(tmp_path, monkeypatch, check)
