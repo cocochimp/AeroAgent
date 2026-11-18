@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -43,6 +44,14 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="机票退改签工作台 API", version="1.0.0", lifespan=lifespan,
              docs_url=None, redoc_url=None, openapi_url=None)
+
+# DSH 浏览器插件与本机 API 分属不同端口，只放行显式配置的本机宿主来源。
+_DSH_ORIGINS = [origin.strip() for origin in os.getenv(
+    "AEROAGENT_DSH_ORIGINS", "http://127.0.0.1:3080,http://localhost:3080").split(",")
+                if origin.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=_DSH_ORIGINS, allow_credentials=False,
+                   allow_methods=["GET", "POST", "OPTIONS"],
+                   allow_headers=["Authorization", "Content-Type", "Last-Event-ID"])
 
 
 @app.middleware("http")
