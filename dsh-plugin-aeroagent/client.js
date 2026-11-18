@@ -39,12 +39,23 @@ function shouldStopFollowing(record) {
   return ["COMPLETED", "CANCELLED", "HUMAN_REVIEW", "RESULT_UNKNOWN"].includes(record.status);
 }
 
+function quoteStateAfter(_current, result) {
+  const status = result.status;
+  if (status === "ACCEPTED" || status === "PROCESSING") return "processing";
+  if (status === "COMPLETED") return "completed";
+  if (status === "CANCELLED") return "cancelled";
+  if (status === "REQUOTE_REQUIRED" || status === "WAITING_CONFIRMATION") return "requote";
+  if (status === "RESULT_UNKNOWN") return "unknown";
+  if (["FAILED", "HUMAN_REVIEW"].includes(status)) return "failed";
+  return "confirming";
+}
+
 const css = `
 :root{--aero-bg:#0b111c;--aero-panel:#111927;--aero-card:#151f30;--aero-line:#2a3549;--aero-text:#e8edf6;--aero-muted:#8c99ae;--aero-purple:#7e6df2;--aero-green:#42d392;--aero-amber:#f0b45b;--aero-red:#fa7286}
 #root{transition:padding-right .18s ease;box-sizing:border-box}.aero-ui,.aero-ui *{box-sizing:border-box}.aero-ui{font:12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;color:var(--aero-text)}
 .aero-nav{margin:4px 8px 8px;padding:7px 0;border-top:1px solid var(--aero-line)}.aero-nav-label{padding:3px 9px;color:var(--aero-muted);font-size:9px;letter-spacing:1.2px}.aero-nav-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}.aero-nav button{border:0;background:transparent;color:#aab6c8;border-radius:7px;padding:6px 7px;text-align:left;cursor:pointer;font-size:11px}.aero-nav button:hover{background:#7e6df21a;color:#d7ceff}.aero-nav button span{display:inline-block;width:18px;color:#a99aff}
 .aero-dock-wrap{margin:0 0 8px}.aero-dock-title{display:flex;align-items:center;color:var(--aero-muted);font-size:10px;margin:0 2px 6px}.aero-dock-title b{color:#c6cfdf;font-weight:500;margin-right:7px}.aero-dock-title span:last-child{margin-left:auto}.aero-dock{display:flex;gap:8px;overflow-x:auto;padding:1px 1px 5px;scrollbar-width:thin;scrollbar-color:#354159 transparent}.aero-card{flex:0 0 148px;border:1px solid var(--aero-line);border-radius:10px;padding:8px 10px;background:var(--aero-card);cursor:pointer;color:var(--aero-text);text-align:left}.aero-card:hover{border-color:#53617b}.aero-card.on{border-color:var(--aero-purple);box-shadow:0 0 0 1px #7e6df244;background:#1c1c35}.aero-card .fno{font-weight:700;font-family:ui-monospace,Menlo,monospace}.aero-card-top{display:flex;align-items:center;justify-content:space-between;gap:5px}.aero-route{margin:4px 0 2px}.aero-chip{font-size:9px;padding:1px 6px;border-radius:6px;border:1px solid;white-space:nowrap}.aero-chip.cancel{color:var(--aero-red);border-color:#64303a;background:#fa728510}.aero-chip.delay{color:var(--aero-amber);border-color:#60502c;background:#f0b45b10}.aero-chip.ok{color:var(--aero-green);border-color:#285b45;background:#42d39210}.aero-note{font-size:10px;color:var(--aero-muted)}.aero-quick{display:flex;gap:6px;margin-top:5px;overflow:auto}.aero-quick button{border:1px solid var(--aero-line);background:#111a28;color:#9eabc0;border-radius:99px;padding:4px 9px;cursor:pointer;font-size:9px;white-space:nowrap}.aero-quick button:hover{border-color:#6e61bb;color:#d5ccff}
-.aero-quote{border:1px solid #344159;border-radius:13px;background:linear-gradient(150deg,#162033,#101722);padding:0;margin:9px 0;color:var(--aero-text);max-width:510px;overflow:hidden;box-shadow:0 12px 30px #0003}.aero-quote-head{display:flex;align-items:center;gap:9px;padding:11px 13px;border-bottom:1px solid var(--aero-line)}.aero-quote-icon{width:29px;height:29px;border-radius:8px;background:#7e6df21c;color:#b9adff;display:grid;place-items:center}.aero-quote-title small{display:block;color:var(--aero-muted);font-size:9px}.aero-quote-state{margin-left:auto;color:var(--aero-green);border:1px solid #285943;border-radius:99px;padding:3px 7px;font-size:9px}.aero-quote-body{padding:9px 13px}.aero-quote .row{display:flex;justify-content:space-between;padding:4px 0;color:#b8c3d4}.aero-total{border-top:1px dashed #3a465d;margin-top:5px;padding-top:8px;display:flex;justify-content:space-between;align-items:end}.aero-total strong{font-size:24px;font-family:ui-monospace,Menlo,monospace}.aero-rule{color:var(--aero-muted);font-size:9px;margin-top:8px}.aero-rule b{color:#ae9fff}.aero-quote-actions{display:flex;align-items:center;gap:8px;padding:10px 13px;background:#0e1521}.aero-quote button{border:0;border-radius:8px;padding:7px 12px;cursor:pointer;font:inherit}.aero-confirm{background:var(--aero-purple);color:#fff}.aero-confirm:disabled{opacity:.6;cursor:wait}.aero-cancel{background:transparent;color:#a4b0c2;border:1px solid #3a465c!important}.aero-quote-actions small{margin-left:auto;color:#68768d;font-size:8px}.aero-message{padding:8px 12px;font-size:10px}.aero-message.ok{color:var(--aero-green);background:#10251d}.aero-message.error{color:var(--aero-red);background:#2a151c}
+.aero-quote{border:1px solid #344159;border-radius:13px;background:linear-gradient(150deg,#162033,#101722);padding:0;margin:9px 0;color:var(--aero-text);max-width:510px;overflow:hidden;box-shadow:0 12px 30px #0003}.aero-quote-head{display:flex;align-items:center;gap:9px;padding:11px 13px;border-bottom:1px solid var(--aero-line)}.aero-quote-icon{width:29px;height:29px;border-radius:8px;background:#7e6df21c;color:#b9adff;display:grid;place-items:center}.aero-quote-title small{display:block;color:var(--aero-muted);font-size:9px}.aero-quote-state{margin-left:auto;color:var(--aero-green);border:1px solid #285943;border-radius:99px;padding:3px 7px;font-size:9px}.aero-quote-body{padding:9px 13px}.aero-quote .row{display:flex;justify-content:space-between;padding:4px 0;color:#b8c3d4}.aero-total{border-top:1px dashed #3a465d;margin-top:5px;padding-top:8px;display:flex;justify-content:space-between;align-items:end}.aero-total strong{font-size:24px;font-family:ui-monospace,Menlo,monospace}.aero-rule{color:var(--aero-muted);font-size:9px;margin-top:8px}.aero-rule b{color:#ae9fff}.aero-quote-actions{display:flex;align-items:center;gap:8px;padding:10px 13px;background:#0e1521}.aero-quote button{border:0;border-radius:8px;padding:7px 12px;cursor:pointer;font:inherit}.aero-confirm{background:var(--aero-purple);color:#fff}.aero-confirm:disabled{opacity:.6;cursor:wait}.aero-cancel{background:transparent;color:#a4b0c2;border:1px solid #3a465c!important}.aero-quote-actions small{margin-left:auto;color:#68768d;font-size:8px}.aero-quote[data-state="completed"] .aero-quote-actions,.aero-quote[data-state="cancelled"] .aero-quote-actions,.aero-quote[data-state="requote"] .aero-quote-actions,.aero-quote[data-state="unknown"] .aero-quote-actions{display:none}.aero-message{padding:8px 12px;font-size:10px}.aero-message.ok{color:var(--aero-green);background:#10251d}.aero-message.error{color:var(--aero-red);background:#2a151c}
 .aero-panel{position:fixed;top:0;right:0;width:var(--aero-inspector,340px);bottom:0;background:var(--aero-bg);border-left:1px solid var(--aero-line);z-index:60;overflow:hidden;color:var(--aero-text)}.aero-inspect-head{padding:17px 14px 11px}.aero-eyebrow{font-size:9px;color:#8878d7;letter-spacing:1.4px}.aero-inspect-head h3{margin:3px 0 0;font-size:15px}.aero-case-id{font:9px ui-monospace,Menlo,monospace;color:var(--aero-muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis}.aero-case-summary{margin:0 12px 11px;padding:9px 10px;border:1px solid var(--aero-line);border-radius:9px;background:var(--aero-panel);display:grid;grid-template-columns:1fr 1fr;gap:8px}.aero-case-summary small{display:block;color:#728198;font-size:8px}.aero-case-summary span{font-size:10px}.aero-case-state{color:var(--aero-green)!important}.aero-tabs{display:grid;grid-template-columns:repeat(4,1fr);padding:0 10px;border-bottom:1px solid var(--aero-line)}.aero-tab{border:0;border-bottom:2px solid transparent;background:transparent;color:#8492a8;padding:8px 2px;cursor:pointer}.aero-tab.on{color:#c5b9ff;border-bottom-color:var(--aero-purple)}.aero-inspect-body{height:calc(100vh - 181px);overflow:auto;padding:12px;scrollbar-width:thin;scrollbar-color:#354159 transparent}.aero-empty{color:var(--aero-muted);font-size:11px;padding:14px 4px}.aero-mini{border:1px solid var(--aero-line);background:var(--aero-panel);border-radius:9px;padding:10px;margin-bottom:9px}.aero-mini h4{font-size:10px;margin:0 0 7px}.aero-kv{display:flex;justify-content:space-between;gap:10px;padding:4px 0;color:#9eacc0;font-size:10px}.aero-kv span:last-child{color:#d7dfeb;text-align:right;word-break:break-word}.aero-timeline{list-style:none;margin:0;padding:0}.aero-step{position:relative;padding:0 0 13px 22px}.aero-step:before{content:"";position:absolute;left:5px;top:14px;bottom:0;width:1px;background:#2c3850}.aero-step:last-child:before{display:none}.aero-dot{position:absolute;left:0;top:2px;width:12px;height:12px;border:2px solid var(--aero-green);border-radius:50%;color:var(--aero-green);font-size:7px;display:grid;place-items:center}.aero-step.error .aero-dot{border-color:var(--aero-red)}.aero-step b{font-size:10px}.aero-step small{display:block;color:#728198;font-size:8px}.aero-step p,.aero-json{background:#111a28;border:1px solid #233047;border-radius:7px;padding:7px;color:#9facbf;font-size:9px;margin:4px 0 0;white-space:pre-wrap;word-break:break-word;overflow:auto;max-height:230px}.aero-bar{height:6px;border-radius:99px;background:#243047;margin:4px 0 7px;overflow:hidden}.aero-bar i{display:block;height:100%;background:linear-gradient(90deg,#6758d5,#a18fff)}.aero-verify{padding:12px;text-align:center;border:1px solid #285943;border-radius:9px;background:#10251d;color:#77dfab;margin-bottom:9px}.aero-metrics{display:grid;grid-template-columns:1fr 1fr;gap:7px}.aero-metrics div{background:var(--aero-panel);border:1px solid var(--aero-line);border-radius:8px;padding:8px}.aero-metrics small{display:block;color:var(--aero-muted);font-size:8px}.aero-metrics b{font-size:13px}
 .aero-learning{position:fixed;top:0;bottom:0;right:var(--aero-inspector,340px);z-index:55;background:radial-gradient(circle at 40% 0,#211e3d55,transparent 36%),var(--aero-bg);padding:25px;overflow:auto;display:none}.aero-learning.on{display:block}.aero-learning-head{display:flex;align-items:start;margin-bottom:18px}.aero-learning-head h2{margin:0;font-size:19px}.aero-learning-head p{margin:4px 0 0;color:var(--aero-muted);font-size:11px}.aero-learning-close{margin-left:auto;border:1px solid var(--aero-line);background:var(--aero-panel);color:#b6c1d2;border-radius:8px;padding:6px 10px;cursor:pointer}.aero-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px;margin-bottom:14px}.aero-stat{border:1px solid var(--aero-line);background:var(--aero-panel);border-radius:11px;padding:14px}.aero-stat small{color:var(--aero-muted)}.aero-stat b{display:block;font-size:22px;margin-top:4px}.aero-table-wrap{border:1px solid var(--aero-line);background:var(--aero-panel);border-radius:11px;padding:13px;overflow:auto}.aero-table{width:100%;border-collapse:collapse;font-size:10px}.aero-table th,.aero-table td{text-align:left;padding:10px;border-bottom:1px solid var(--aero-line)}.aero-table th{color:var(--aero-muted);font-weight:500}.aero-ok{color:var(--aero-green)}.aero-error-text{color:var(--aero-red)}
 @media(max-width:1100px){.aero-card{flex-basis:140px}}
@@ -225,10 +236,30 @@ async function refreshDock() {
   old.replaceWith(fresh);
 }
 
+function caseQuotePayload(quote, caseId) {
+  const detail = (quote.details || [{}])[0];
+  const pricing = detail.pricing || {};
+  return { quote_id: quote.quote_id, case_id: caseId, order_id: quote.order_id || activeCase?.order_id,
+    action: quote.action, amount: quote.amount, currency: quote.currency || "CNY",
+    expires_at: quote.expires_at, fee_items: detail.fee_items || [], rule_refs: detail.rule_refs || [],
+    target: detail.target || pricing.target || null };
+}
+
+function disableSiblingQuotes(caseId, selectedQuoteId) {
+  document.querySelectorAll(".aero-quote").forEach((card) => {
+    if (card.dataset.caseId !== caseId || card.dataset.quoteId === selectedQuoteId) return;
+    card.dataset.state = "cancelled";
+    card.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+    const state = card.querySelector(".aero-quote-state");
+    if (state) state.textContent = "已选择其他方案";
+  });
+}
+
 function quoteCard(payload, host) {
   const isRefund = payload.action === "REFUND";
   const target = payload.target || {};
-  const card = el("article", { class: "aero-quote aero-ui", "data-quote-id": payload.quote_id },
+  const card = el("article", { class: "aero-quote aero-ui", "data-quote-id": payload.quote_id,
+    "data-case-id": payload.case_id, "data-state": "offered" },
     el("div", { class: "aero-quote-head" }, el("span", { class: "aero-quote-icon" }, isRefund ? "↩" : "⇄"),
       el("div", { class: "aero-quote-title" }, el("b", null, isRefund ? "退票方案" : "改签方案"),
         el("small", null, `${payload.order_id || ""}${target.flight_no ? ` · ${target.flight_no} ${target.date || ""}` : ""}`)),
@@ -241,24 +272,86 @@ function quoteCard(payload, host) {
       el("div", { class: "aero-rule" }, "依据 ", el("b", null, (payload.rule_refs || []).join(", ") || "运价引擎"),
         ` · 案件 ${payload.case_id}`)));
   const confirm = el("button", { class: "aero-confirm", type: "button" }, isRefund ? "✓ 确认退票" : "✓ 确认改签");
-  const decline = el("button", { class: "aero-cancel", type: "button", onclick: () => card.remove() }, "暂不办理");
+  const decline = el("button", { class: "aero-cancel", type: "button" }, "暂不办理");
+  const actions = el("div", { class: "aero-quote-actions" }, confirm, decline,
+    el("small", null, "确认后才会写入订单"));
+  const message = el("div", { class: "aero-message", style: "display:none" });
+  card.append(actions, message);
+
+  function setState(state, text = "") {
+    card.dataset.state = state;
+    const badge = card.querySelector(".aero-quote-state");
+    const labels = { offered: "✓ 可办理", confirming: "复核中", processing: "办理中", completed: "✓ 已完成",
+      cancelled: "已取消", requote: "需确认新报价", failed: "办理失败", unknown: "结果待核对" };
+    badge.textContent = labels[state] || state;
+    confirm.disabled = ["confirming", "processing", "completed", "cancelled", "requote", "unknown"].includes(state);
+    decline.disabled = confirm.disabled;
+    confirm.textContent = state === "confirming" ? "复核中…" : state === "processing" ? "办理中…" :
+      isRefund ? "✓ 确认退票" : "✓ 确认改签";
+    message.className = `aero-message${state === "completed" ? " ok" : ["failed", "unknown"].includes(state) ? " error" : ""}`;
+    message.textContent = text;
+    message.style.display = text ? "block" : "none";
+    if (["completed", "cancelled", "requote"].includes(state)) disableSiblingQuotes(payload.case_id, payload.quote_id);
+  }
+
+  function renderReplacement(record) {
+    const replacement = [...(record.quotes || [])].reverse().find((quote) => quote.status === "OFFERED");
+    if (!replacement || replacement.quote_id === payload.quote_id) return;
+    const placeholder = el("div");
+    card.after(placeholder);
+    quoteCard(caseQuotePayload(replacement, payload.case_id), placeholder);
+  }
+
   confirm.addEventListener("click", async () => {
-    confirm.disabled = true;
-    confirm.textContent = "办理中…";
+    setState("confirming", "正在复核价格并提交办理…");
     try {
       const keys = requestKeys(payload.quote_id);
       const result = await api(`/api/v1/quotes/${payload.quote_id}/confirm`, TOKEN, { method: "POST",
         body: JSON.stringify({ confirmation_id: keys.confirmationId, idempotency_key: keys.idempotencyKey }) });
-      card.append(el("div", { class: "aero-message ok" }, `已受理：operation ${result.operation_id || result.status}`));
+      const next = quoteStateAfter("confirming", result);
+      setState(next, `Quote API 已受理，operation ${result.operation_id || "创建中"}；等待 TransactionAgent 返回最终状态。`);
+      disableSiblingQuotes(payload.case_id, payload.quote_id);
       await refreshPanel(payload.case_id);
+      const followed = await followCase(payload.case_id);
+      const record = followed || await refreshPanel(payload.case_id);
+      if (!record) return;
+      const terminal = quoteStateAfter(next, record);
+      const operationStatus = record.result?.operation?.status || record.status;
+      const messages = {
+        completed: `办理完成：订单状态 ${operationStatus}，订单卡已刷新。`,
+        requote: "价格复核发生变化，请确认下方最新报价。",
+        unknown: "航司暂未返回明确结果，请核对订单；请勿重复提交。",
+        failed: `办理未完成：${record.result?.operation?.message || record.status}，已保留案件轨迹。`,
+      };
+      setState(terminal, messages[terminal] || `当前状态：${record.status}`);
+      if (terminal === "requote") renderReplacement(record);
     } catch (error) {
-      confirm.disabled = false;
-      confirm.textContent = isRefund ? "✓ 确认退票" : "✓ 确认改签";
-      card.append(el("div", { class: "aero-message error" }, `确认失败：${error.message}`));
+      const details = error.body?.error?.details || {};
+      if (details.quote_id) {
+        setState("requote", `${error.message}，请确认下方最新报价。`);
+        const record = await refreshPanel(payload.case_id);
+        if (record) renderReplacement(record);
+      } else {
+        setState("failed", `${error.message}。可使用同一报价安全重试，不会重复创建交易。`);
+        confirm.disabled = false;
+        decline.disabled = false;
+      }
     }
   });
-  card.append(el("div", { class: "aero-quote-actions" }, confirm, decline,
-    el("small", null, "确认后才会写入订单")));
+
+  decline.addEventListener("click", async () => {
+    setState("confirming", "正在取消报价，不会创建交易…");
+    try {
+      const result = await api(`/api/v1/cases/${payload.case_id}/messages`, TOKEN, {
+        method: "POST", body: JSON.stringify({ message: "暂不办理" }) });
+      setState(quoteStateAfter("offered", result), "已取消本次报价，订单未发生变化。 ");
+      await refreshPanel(payload.case_id);
+    } catch (error) {
+      setState("failed", `取消失败：${error.message}`);
+      confirm.disabled = false;
+      decline.disabled = false;
+    }
+  });
   host.replaceWith(card);
 }
 
@@ -454,12 +547,12 @@ async function followCase(caseId) {
           if (terminalEvent(type)) {
             const record = await refreshPanel(caseId);
             if (type === "fulfillment.completed") await refreshDock();
-            if (record && shouldStopFollowing(record)) return;
+            if (record && shouldStopFollowing(record)) return record;
           }
         }
       }
       const record = await refreshPanel(caseId);
-      if (record && shouldStopFollowing(record)) return;
+      if (record && shouldStopFollowing(record)) return record;
     } catch (error) {
       if (controller.signal.aborted) return;
       const body = inspectorBody();
@@ -551,7 +644,7 @@ const inject = [];
 function apply() { /* 客户端以 DOM 注入方式工作，无需服务端注册 */ }
 
 globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
-  { parseAeroAgentQuote, orderView, requestKeys, caseView, shouldStopFollowing });
+  { parseAeroAgentQuote, orderView, requestKeys, caseView, shouldStopFollowing, quoteStateAfter });
 if (typeof window !== "undefined" && window.__ModuleLoader__ && !globalThis.__AERO_DSH_MODULE_REGISTERED) {
   window.__ModuleLoader__.load({ id: "dsh-plugin-aeroagent", factory: () => ({ inject, apply }) });
   globalThis.__AERO_DSH_MODULE_REGISTERED = true;

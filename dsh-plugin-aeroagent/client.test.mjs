@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import "./client.js";
 
-const { parseAeroAgentQuote, orderView, requestKeys, caseView, shouldStopFollowing } =
+const { parseAeroAgentQuote, orderView, requestKeys, caseView, shouldStopFollowing, quoteStateAfter } =
   globalThis.AeroAgentClient || {};
 
 test("parses only valid AeroAgent quote JSON", () => {
@@ -35,6 +35,13 @@ test("stops only at explicit terminal or review states", () => {
   assert.equal(shouldStopFollowing({ status: "PROCESSING" }), false);
   assert.equal(shouldStopFollowing({ status: "COMPLETED" }), true);
   assert.equal(shouldStopFollowing({ status: "RESULT_UNKNOWN" }), true);
+});
+
+test("accepted confirmation is processing, not success", () => {
+  assert.equal(quoteStateAfter("confirming", { status: "ACCEPTED" }), "processing");
+  assert.equal(quoteStateAfter("processing", { status: "COMPLETED" }), "completed");
+  assert.equal(quoteStateAfter("processing", { status: "RESULT_UNKNOWN" }), "unknown");
+  assert.equal(quoteStateAfter("offered", { status: "CANCELLED" }), "cancelled");
 });
 
 test("contains no module syntax rejected by the DSH classic-script bundle", async () => {
