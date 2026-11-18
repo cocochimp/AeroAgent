@@ -58,10 +58,23 @@ function quoteStateAfter(_current, result) {
   return "confirming";
 }
 
-function followAction(type, record) {
-  if (type === "quote.revised" || record.status === "REQUOTE_REQUIRED" ||
-      (record.quotes || []).some((quote) => quote.status === "REQUOTE_REQUIRED")) return "requote";
+function followAction(_type, record) {
+  if (record.status === "WAITING_CONFIRMATION" &&
+      (record.quotes || []).some((quote) => quote.status === "OFFERED")) return "requote";
   return shouldStopFollowing(record) ? "stop" : "continue";
+}
+
+function quoteCardState(record, quote) {
+  if (record.status === "RESULT_UNKNOWN") return "unknown";
+  if (["HUMAN_REVIEW", "FAILED"].includes(record.status)) return "failed";
+  if (record.status === "CANCELLED" || quote.status === "CANCELLED") return "cancelled";
+  if (record.status === "COMPLETED" || quote.status === "EXECUTED") {
+    return quote.status === "EXECUTED" ? "completed" : "cancelled";
+  }
+  if (quote.status === "REQUOTE_REQUIRED") return "requote";
+  if (record.status === "PROCESSING" || quote.status === "CONFIRMED") return "processing";
+  if (record.status === "WAITING_CONFIRMATION" && quote.status === "OFFERED") return "offered";
+  return "failed";
 }
 
 function traceEventKey(event) {
@@ -295,6 +308,22 @@ function disableSiblingQuotes(caseId, selectedQuoteId) {
   });
 }
 
+function reconcileQuoteCards(record) {
+  const labels = { offered: "✓ 可办理", confirming: "复核中", processing: "办理中", completed: "✓ 已完成",
+    cancelled: "已取消", requote: "需确认新报价", failed: "办理失败", unknown: "结果待核对" };
+  const quotes = new Map((record.quotes || []).map((quote) => [quote.quote_id, quote]));
+  document.querySelectorAll(".aero-quote").forEach((card) => {
+    if (card.dataset.caseId !== record.case_id) return;
+    const quote = quotes.get(card.dataset.quoteId);
+    if (!quote) return;
+    const state = quoteCardState(record, quote);
+    card.dataset.state = state;
+    card.querySelectorAll("button").forEach((button) => { button.disabled = state !== "offered"; });
+    const badge = card.querySelector(".aero-quote-state");
+    if (badge) badge.textContent = labels[state] || state;
+  });
+}
+
 function quoteCard(payload, host) {
   const isRefund = payload.action === "REFUND";
   const target = payload.target || {};
@@ -318,7 +347,7 @@ function quoteCard(payload, host) {
   const message = el("div", { class: "aero-message", style: "display:none" });
   card.append(actions, message);
 
-  function setState(state, text = "") {
+  function setState(state, text = "", syncSiblings = true) {
     card.dataset.state = state;
     const badge = card.querySelector(".aero-quote-state");
     const labels = { offered: "✓ 可办理", confirming: "复核中", processing: "办理中", completed: "✓ 已完成",
@@ -331,16 +360,33 @@ function quoteCard(payload, host) {
     message.className = `aero-message${state === "completed" ? " ok" : ["failed", "unknown"].includes(state) ? " error" : ""}`;
     message.textContent = text;
     message.style.display = text ? "block" : "none";
-    if (["completed", "requote"].includes(state)) disableSiblingQuotes(payload.case_id, payload.quote_id);
-    if (state === "cancelled") cancelAllQuotes(payload.case_id);
+    if (syncSiblings && ["completed", "requote"].includes(state)) disableSiblingQuotes(payload.case_id, payload.quote_id);
+    if (syncSiblings && state === "cancelled") cancelAllQuotes(payload.case_id);
   }
 
   function renderReplacement(record) {
     const replacement = [...(record.quotes || [])].reverse().find((quote) => quote.status === "OFFERED");
-    if (!replacement || replacement.quote_id === payload.quote_id) return;
+    if (!replacement || replacement.quote_id === payload.quote_id ||
+        document.querySelector(`[data-quote-id="${replacement.quote_id}"]`)) return;
     const placeholder = el("div");
     card.after(placeholder);
     quoteCard(caseQuotePayload(replacement, payload.case_id), placeholder);
+  }
+
+  async function settle(next) {
+    const followed = await followCase(payload.case_id);
+    const record = followed || await refreshPanel(payload.case_id);
+    if (!record) return;
+    const terminal = quoteStateAfter(next, record);
+    const operationStatus = record.result?.operation?.status || record.status;
+    const messages = {
+      completed: `办理完成：订单状态 ${operationStatus}，订单卡已刷新。`,
+      requote: "价格复核发生变化，请确认下方最新报价。",
+      unknown: "航司暂未返回明确结果，请核对订单；请勿重复提交。",
+      failed: `办理未完成：${record.result?.operation?.message || record.status}，已保留案件轨迹。`,
+    };
+    setState(terminal, messages[terminal] || `当前状态：${record.status}`);
+    if (terminal === "requote") renderReplacement(record);
   }
 
   confirm.addEventListener("click", async () => {
@@ -353,19 +399,7 @@ function quoteCard(payload, host) {
       const next = quoteStateAfter("confirming", result);
       setState(next, `Quote API 已受理，operation ${result.operation_id || "创建中"}；等待 TransactionAgent 返回最终状态。`);
       await refreshPanel(payload.case_id);
-      const followed = await followCase(payload.case_id);
-      const record = followed || await refreshPanel(payload.case_id);
-      if (!record) return;
-      const terminal = quoteStateAfter(next, record);
-      const operationStatus = record.result?.operation?.status || record.status;
-      const messages = {
-        completed: `办理完成：订单状态 ${operationStatus}，订单卡已刷新。`,
-        requote: "价格复核发生变化，请确认下方最新报价。",
-        unknown: "航司暂未返回明确结果，请核对订单；请勿重复提交。",
-        failed: `办理未完成：${record.result?.operation?.message || record.status}，已保留案件轨迹。`,
-      };
-      setState(terminal, messages[terminal] || `当前状态：${record.status}`);
-      if (terminal === "requote") renderReplacement(record);
+      await settle(next);
     } catch (error) {
       const details = error.body?.error?.details || {};
       if (details.quote_id) {
@@ -373,9 +407,24 @@ function quoteCard(payload, host) {
         const record = await refreshPanel(payload.case_id);
         if (record) renderReplacement(record);
       } else {
-        setState("failed", `${error.message}。可使用同一报价安全重试，不会重复创建交易。`);
-        confirm.disabled = false;
-        decline.disabled = false;
+        const record = await refreshPanel(payload.case_id);
+        if (!record) {
+          setState("failed", `${error.message}。无法核对案件，其他方案暂不恢复；可用同一幂等键安全重试。`);
+          confirm.disabled = false;
+          decline.disabled = false;
+          return;
+        }
+        reconcileQuoteCards(record);
+        const selectedQuote = (record.quotes || []).find((quote) => quote.quote_id === payload.quote_id) || {};
+        const next = quoteCardState(record, selectedQuote);
+        if (next === "processing") {
+          setState(next, "请求结果已核对，交易正在办理；继续等待最终状态。", false);
+          await settle(next);
+        } else {
+          if (record.status === "COMPLETED") await refreshDock();
+          setState(next, `${error.message}。已按当前案件快照恢复报价状态。`, false);
+          if (next === "requote") renderReplacement(record);
+        }
       }
     }
   });
@@ -725,7 +774,7 @@ function apply() { /* 客户端以 DOM 注入方式工作，无需服务端注�
 
 globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
   { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing,
-    quoteStateAfter, followAction, traceEventKey, verificationView });
+    quoteStateAfter, followAction, traceEventKey, verificationView, quoteCardState });
 if (typeof window !== "undefined" && window.__ModuleLoader__ && !globalThis.__AERO_DSH_MODULE_REGISTERED) {
   window.__ModuleLoader__.load({ id: "dsh-plugin-aeroagent", factory: () => ({ inject, apply }) });
   globalThis.__AERO_DSH_MODULE_REGISTERED = true;

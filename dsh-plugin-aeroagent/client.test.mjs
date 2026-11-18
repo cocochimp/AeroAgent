@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import "./client.js";
 
 const { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing,
-  quoteStateAfter, followAction, traceEventKey, verificationView } = globalThis.AeroAgentClient || {};
+  quoteStateAfter, followAction, traceEventKey, verificationView, quoteCardState } = globalThis.AeroAgentClient || {};
 
 test("parses only valid AeroAgent quote JSON", () => {
   assert.equal(parseAeroAgentQuote("ordinary text"), null);
@@ -50,10 +50,24 @@ test("accepted confirmation is processing, not success", () => {
   assert.equal(quoteStateAfter("offered", { status: "CANCELLED" }), "cancelled");
 });
 
-test("returns requote records instead of reconnecting forever", () => {
-  assert.equal(followAction("quote.revised", { status: "WAITING_CONFIRMATION" }), "requote");
-  assert.equal(followAction("case.proposed", { status: "COMPLETED" }), "stop");
-  assert.equal(followAction("case.trace", { status: "PROCESSING" }), "continue");
+test("returns requote only for a current actionable replacement", () => {
+  const replacement = { quote_id: "q2", status: "OFFERED" };
+  assert.equal(followAction("quote.revised", { status: "WAITING_CONFIRMATION", quotes: [replacement] }), "requote");
+  assert.equal(followAction("case.proposed", { status: "COMPLETED", quotes: [] }), "stop");
+  assert.equal(followAction("case.trace", { status: "PROCESSING", quotes: [] }), "continue");
+});
+
+test("historical requote does not interrupt the replacement fulfillment", () => {
+  const historical = { quote_id: "q1", status: "REQUOTE_REQUIRED" };
+  const confirmed = { quote_id: "q2", status: "CONFIRMED" };
+  assert.equal(followAction("quote.revised", { status: "PROCESSING", quotes: [historical, confirmed] }), "continue");
+  assert.equal(followAction("fulfillment.completed", { status: "COMPLETED", quotes: [historical, confirmed] }), "stop");
+});
+
+test("failed confirmation restores only alternatives still offered by the case", () => {
+  assert.equal(quoteCardState({ status: "WAITING_CONFIRMATION" }, { status: "OFFERED" }), "offered");
+  assert.equal(quoteCardState({ status: "WAITING_CONFIRMATION" }, { status: "CANCELLED" }), "cancelled");
+  assert.equal(quoteCardState({ status: "PROCESSING" }, { status: "CONFIRMED" }), "processing");
 });
 
 test("deduplicates replayed traces by stable event identity", () => {
