@@ -4,6 +4,9 @@
 
 > 所有航司、航班、订单、用户与规则均为**虚构数据**，由 `air_agent/seed.py` 按「今天」确定性生成，仅用于演示。
 
+<img width="1013" height="744" alt="image" src="https://github.com/user-attachments/assets/b5b861f9-deba-4acd-98e9-3072a17f63fb" />
+
+
 ## 快速启动
 
 ```bash
