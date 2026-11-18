@@ -8,7 +8,7 @@ from app import config as S
 
 DATE = r"^\d{4}-\d{2}-\d{2}$"
 FLIGHT = r"^[A-Z0-9]{2}\d{3,4}$"
-ORDER = r"^ORD\d{11}$"
+ORDER = r"^ORD(?:\d{11}|[0-9A-F]{24})$"
 Cabin = Literal["F", "C", "Y"]
 FareProduct = Literal["F", "C", "Y", "Y_DISCOUNT", "SPECIAL", "GROUP"]
 Scenario = Literal["VOLUNTARY_CHANGE", "VOLUNTARY_REFUND", "CANCEL", "DELAY", "NO_SHOW", "FARE_DIFF"]

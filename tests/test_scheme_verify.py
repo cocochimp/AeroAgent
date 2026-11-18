@@ -452,3 +452,12 @@ def test_fare_product_label_is_not_treated_as_an_unsupported_claim():
             "options": [{"type": "STATUS"}]}
     _, bad = verify._unsupported(unit)
     assert bad == []
+
+
+def test_duplicate_results_do_not_produce_duplicate_options():
+    """同一笔退票结果重复出现时，方案列表只能保留一张卡。"""
+    from app.application.agents import proposal as scheme
+
+    res = _results()
+    out = scheme.generate(res + res)
+    assert len(out.options) == len(scheme.generate(res).options)

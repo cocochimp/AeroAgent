@@ -214,7 +214,7 @@ def resolve_order(text: str, ctx: dict) -> str | None:
     """结合订单号、航线、指代和订单栈确定目标订单；只有唯一未来订单才自动推断。"""
     orders = data.list_orders(ctx["user_id"])
     by_id = {o["order_id"]: o for o in orders}
-    m = re.search(r"ORD\d{11}", text)
+    m = re.search(r"ORD(?:\d{11}|[0-9A-F]{24})", text)
     if m and m.group(0) in by_id:
         return m.group(0)
     stack = [x for x in ctx.get("order_stack", []) if x in by_id]
@@ -337,6 +337,17 @@ def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
                 s.target_date = forced_date
             elif not provider_date_rejected:
                 s.target_date = s.target_date or find_date(question)
+
+    # 同一诉求被重复拆出（例如模型把一句话拆成两个退票子任务）会产生重复方案和重复报价。
+    deduped, seen = [], set()
+    for sub in subs:
+        key = ((sub.intent, sub.target_date) if sub.intent in ("CHANGE", "REFUND", "STATUS")
+               else (sub.intent, sub.text.strip()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(sub)
+    subs = deduped
 
     p = ParsedQuery(intents=[s.intent for s in subs], sub_queries=subs)
     oid = resolve_order(question, ctx)

@@ -1,4 +1,5 @@
 import asyncio
+import re
 
 import pytest
 from fastapi import HTTPException
@@ -64,6 +65,7 @@ def test_booking_uses_server_snapshot_and_enforces_ownership(tmp_path, monkeypat
         expected_fare = selected[2]
         result = await api.create_booking(api.BookingCreateRequest(**_command(selected)), USER)
 
+        assert re.fullmatch(r"ORD\d{11}", result["order_id"]), "订单号必须沿用业务统一格式"
         assert result["status"] == "PENDING_PAYMENT"
         assert result["user_id"] == USER.user_id
         assert result["fare"] == expected_fare

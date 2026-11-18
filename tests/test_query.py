@@ -337,3 +337,15 @@ def test_provider_may_supply_the_target_date_for_local_change_intent():
 
     assert p.intents == ["CHANGE"]
     assert p.sub_queries[0].target_date == "2026-10-03"
+
+
+def test_duplicate_provider_subqueries_are_collapsed():
+    """模型把一句话拆成两个相同退票诉求时，只能生成一个方案。"""
+    class LLM:
+        def parse_intents(self, *args):
+            return [SubQuery(intent="REFUND", text="退票"), SubQuery(intent="REFUND", text="退票退款")]
+
+    p = query.understand("航班取消了，请计算退票费和最终退款", ctx(selected_order_id=f"ORD{D}001"), llm=LLM())
+
+    assert p.intents == ["REFUND"]
+    assert len(p.sub_queries) == 1

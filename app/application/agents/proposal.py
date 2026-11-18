@@ -56,9 +56,13 @@ def _option(r: dict) -> tuple[SchemeOption, str]:
 
 def generate(results: list[dict], feedback: list[str] | None = None, llm=None, context: dict | None = None) -> SchemeOutput:
     """根据工具证据生成只读退改方案；模型仅润色文案，结构化金额始终采用引擎结果。"""
-    opts, texts = [], []
+    opts, texts, seen = [], [], set()
     for r in results:
         o, t = _option(r)
+        key = (o.type, o.title, o.total)
+        if key in seen:                      # 重复子诉求不能变成重复方案
+            continue
+        seen.add(key)
         opts.append(o)
         texts.append(t)
     out = SchemeOutput(options=opts, text="".join(texts), texts=texts)

@@ -1,5 +1,7 @@
 """本地 SQL 快照预订与幂等 Mock Payment；不调用真实航司、库存或资金渠道。"""
 import hashlib
+import secrets
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -32,6 +34,12 @@ class BookingError(Exception):
 def _as_utc(value: datetime | None) -> datetime | None:
     """为 SQLite 读出的 naive UTC 时间恢复时区标记。"""
     return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
+
+
+def _new_order_id() -> str:
+    """订单号沿用业务统一格式 ORD + 11 位数字；时间前缀 + 随机尾号避免并发碰撞。"""
+    stamp = int(time.time() * 1000) % 10**8
+    return f"ORD{stamp:08d}{secrets.randbelow(1000):03d}"
 
 
 def _ticket_no(booking_id: str, payment_key: str) -> str:
@@ -72,7 +80,7 @@ async def create_booking(user_id: str, flight_no: str, date: str, fare_product: 
     """使用服务端航班票价快照创建待支付订单，订单、预订和审计同事务提交。"""
     now = utcnow()
     booking_id = f"bk_{uuid.uuid4().hex}"
-    order_id = f"ORD{uuid.uuid4().hex[:24].upper()}"
+    order_id = _new_order_id()
     async with SessionFactory() as session:
         flight = await session.scalar(select(FlightRecord).where(
             FlightRecord.flight_no == flight_no.upper(), FlightRecord.date == date).with_for_update())

@@ -198,3 +198,26 @@ def test_confirmation_is_idempotent_for_the_same_key(native):
     assert replay.status_code == 202
     assert replay.json()["operation_id"] == first.json()["operation_id"]
     assert replay.json()["idempotent"] is True
+
+
+def test_listing_booking_can_be_refunded_in_chat(native):
+    """Listing 新下的订单必须能被退改会话识别：这是两个模块之间的真实接缝。"""
+    flight = native.get("/api/v1/flights", headers={"Authorization": "Bearer demo:u_wang"},
+                        params={"date": "2026-09-28"}).json()["flights"][0]
+    created = native.post("/api/v1/bookings", headers={"Authorization": "Bearer demo:u_wang"},
+                          json={"flight_no": flight["flight_no"], "date": flight["date"],
+                                "fare_product": "Y", "passenger": "王五"})
+    assert created.status_code == 201, created.text
+    booking = created.json()
+    order_id = booking["order_id"]
+    assert re.fullmatch(r"ORD\d{11}", order_id)
+    paid = native.post(f"/api/v1/bookings/{booking['booking_id']}/pay",
+                       headers={"Authorization": "Bearer demo:u_wang"},
+                       json={"idempotency_key": "pay-e2e-refund-1"})
+    assert paid.status_code == 200, paid.text
+    assert paid.json()["status"] == "ISSUED"
+
+    content = _content(_chat(native, ("user", f"@{order_id} 帮我退票，请说明退票费和最终退款。")))
+    _case_id(content)
+    assert "### 退票方案" in content
+    assert "预计退款" in content
