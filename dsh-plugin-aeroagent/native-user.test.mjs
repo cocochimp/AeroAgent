@@ -123,8 +123,8 @@ test("keeps native watch snapshots isolated and restorable per user", () => {
 test("registers a native footer switcher above the host user area and switches shared state", () => {
   const calls = [];
   const runtime = nativeSlotsApply(nativeContext(calls), React, { storage: null });
-  const registration = calls.find((call) => call.name === "sidebar.footer.action" && call.id === "aeroagent-user");
-  assert.ok(registration, "user switcher must use the official footer action slot");
+  const registration = calls.find((call) => call.name === "sidebar.footer.action" && call.id === "aeroagent-footer");
+  assert.ok(registration, "learning navigation and user switcher must share one official footer action");
   const tree = registration.component();
   const select = findNode(tree, (node) => node.type === "select" && node.props?.["aria-label"] === "切换演示用户");
   assert.ok(select);
@@ -135,5 +135,5 @@ test("registers a native footer switcher above the host user area and switches s
   assert.match(textOf(tree), /推荐.*排序.*费用|费用.*推荐.*排序/);
   select.props.onChange({ target: { value: "u_zhao" } });
   assert.equal(runtime.users.getSnapshot().userId, "u_zhao");
-  assert.equal(registration.component().props["data-native-user"], "u_zhao");
+  assert.equal(findNode(registration.component(), (node) => node.props?.["data-native-user"] === "u_zhao")?.props?.["data-native-user"], "u_zhao");
 });

@@ -288,6 +288,10 @@ function createNativeOrderSelection({ storage = globalThis.localStorage } = {}) 
   return { get, select, subscribe };
 }
 
+function openNativeAeroConversation(ctx) {
+  ctx?.layout?.selectPanel?.(null);
+}
+
 function nativeOrderBindingStatus(caseId) {
   return caseId ? `客票已绑定；案件 ${caseId} 已创建，等待后续对话与确认。` : "已绑定客票；尚未创建案件或发送对话。";
 }
@@ -430,6 +434,10 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
     search: ["M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z", "m15.5 15.5 5 5"],
     monitor: ["M4 18V6M4 18h16", "m7 14 4-4 3 2 5-6"],
     observe: ["M3 12s3.3-6 9-6 9 6 9 6-3.3 6-9 6-9-6-9-6Z", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"],
+    evaluation: ["M4 20h16", "M7 17v-5M12 17V7M17 17v-9"],
+    rules: ["M6 3.5h9l4 4v13H6z", "M15 3.5v4h4", "M9 12h7M9 16h7"],
+    data: ["M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Z",
+      "M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6", "M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"],
     send: ["M4 12 20 4l-6 16-3-6-7-2Z", "m11 14 4-4"],
   };
   function NativeIcon({ name, size = 20 }) {
@@ -445,49 +453,58 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
   function useNativeUser() {
     return React.useSyncExternalStore(users.subscribe, users.getSnapshot, users.getSnapshot);
   }
-  function NativeLearningNavigation() {
+  const footerLabelStyle = { margin: "0 10px 4px", color: "var(--dsw-alias-label-tertiary)",
+    fontSize: 11, fontWeight: 500, lineHeight: 1.4 };
+  const footerRowStyle = { boxSizing: "border-box", display: "flex", alignItems: "center", gap: 9,
+    width: "100%", padding: "7px 10px", border: "1px solid transparent", borderRadius: 8,
+    background: "transparent", color: "var(--dsw-alias-label-secondary)", font: "inherit",
+    fontSize: 12, lineHeight: 1.35, textAlign: "left", cursor: "pointer" };
+  function NativeLearningNav() {
     const pages = [
-      { id: "evaluation", label: "评测" },
-      { id: "rules", label: "规则" },
-      { id: "data", label: "数据" },
+      { id: "evaluation", label: "评测", icon: "evaluation" },
+      { id: "rules", label: "规则", icon: "rules" },
+      { id: "data", label: "数据", icon: "data" },
     ];
-    return h("nav", { "aria-label": "AeroAgent 学习导航", style: { boxSizing: "border-box", width: "100%",
-      display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5, padding: "8px 12px 0" } },
+    return h("nav", { "data-aeroagent-learning-nav": "", "aria-label": "AeroAgent 业务学习导航",
+      style: { boxSizing: "border-box", display: "grid", gap: 2, width: "100%" } },
+      h("p", { style: footerLabelStyle }, "业务学习"),
       pages.map((page) => h("button", { key: page.id, type: "button",
-        onClick: () => ctx.layout.selectPanel(`aeroagent-${page.id}`), style: { ...secondaryButton,
-          padding: "6px 4px", fontSize: 11 } }, page.label)));
+        onClick: () => ctx.layout.selectPanel(`aeroagent-${page.id}`), style: footerRowStyle },
+        h("span", { style: { display: "inline-grid", placeItems: "center", width: 18,
+          color: "var(--dsw-alias-label-tertiary)" } }, h(NativeIcon, { name: page.icon, size: 15 })),
+        h("span", null, page.label))));
   }
   function NativeUserSwitcher() {
-    const { userId, user } = useNativeUser();
-    return h("section", { "data-native-user": userId, "aria-label": "AeroAgent 演示用户", style: {
-      boxSizing: "border-box", width: "100%", padding: "10px 12px", display: "grid", gap: 7,
-      color: "var(--dsw-alias-label-primary)", font: "inherit" } },
-      h("label", { htmlFor: "aeroagent-native-user-select", style: { color: "var(--dsw-alias-label-tertiary)",
-        fontSize: 11 } }, "当前演示用户"),
+    const { userId } = useNativeUser();
+    return h("section", { "data-native-user": userId, "aria-label": "AeroAgent 用户切换",
+      style: { boxSizing: "border-box", width: "100%", paddingTop: 8, marginTop: 6,
+        borderTop: "1px solid var(--dsw-alias-border-l1)" } },
+      h("label", { htmlFor: "aeroagent-native-user-select", style: footerLabelStyle }, "当前用户"),
       h("select", { id: "aeroagent-native-user-select", "aria-label": "切换演示用户", value: userId,
-        onChange: (event) => users.switchUser(event.target.value), style: { boxSizing: "border-box", width: "100%",
-          padding: "7px 8px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 7,
-          background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-primary)", font: "inherit",
-          fontSize: 12 } }, users.getUsers().map((item) => h("option", { key: item.user_id, value: item.user_id },
-          `${item.name} · ${item.tier}`))),
-      h("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11 } },
-        h("strong", { style: { fontWeight: 600 } }, user.name), h("span", null, user.tier)),
-      h("p", { style: { margin: 0, color: "var(--dsw-alias-label-tertiary)", fontSize: 10, lineHeight: 1.55 } },
-        "画像只影响推荐与检索排序，不改变退改费用。"));
+        onChange: (event) => users.switchUser(event.target.value), style: { ...footerRowStyle,
+          appearance: "auto", paddingRight: 8 } }, users.getUsers().map((item) => h("option",
+          { key: item.user_id, value: item.user_id }, `${item.name} · ${item.tier}`))),
+      h("p", { style: { margin: "4px 10px 0", color: "var(--dsw-alias-label-tertiary)",
+        fontSize: 10, lineHeight: 1.5 } }, "画像仅影响推荐排序，不改变费用。"));
   }
-  function InspectorPage() {
+  function NativeFooterNavigation() {
+    return h("div", { "data-aeroagent-footer": "", style: { boxSizing: "border-box", width: "100%",
+      display: "grid", padding: "4px 7px 0" } }, NativeLearningNav(), NativeUserSwitcher());
+  }
+  function NativeExecutionInspector() {
     const row = (label) => h("div", { key: label, style: { display: "flex", justifyContent: "space-between",
       gap: 16, padding: "12px 0", borderBottom: "1px solid var(--dsw-alias-border-l1)", fontSize: 13 } },
       h("span", null, label), h("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontSize: 12 } }, "等待数据"));
-    return h("section", { "aria-label": "AeroAgent 执行观测", style: { boxSizing: "border-box", height: "100%",
-      overflow: "auto", padding: 20, color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-bg-base)" } },
-      h("h2", { style: { margin: "0 0 8px", fontSize: 18, fontWeight: 600 } }, "执行观测"),
+    return h("section", { "data-aeroagent-execution-inspector": "", "aria-label": "AeroAgent 执行观测栏",
+      style: { boxSizing: "border-box", height: "100%", overflow: "auto", padding: 20,
+        color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-bg-base)" } },
+      h("h2", { style: { margin: "0 0 8px", fontSize: 18, fontWeight: 600 } }, "执行观测栏"),
       h("p", { style: { margin: "0 0 20px", maxWidth: "42ch", color: "var(--dsw-alias-label-secondary)",
         fontSize: 13, lineHeight: 1.65 } }, "DSH 原生右侧标签已接入。业务对话恢复后，这里将展示本轮真实运行数据。"),
       ["流程", "检索", "记忆", "校验"].map(row));
   }
-  function InspectorButton() {
-    return h("button", { type: "button", title: "AeroAgent 执行观测", "aria-label": "AeroAgent 执行观测",
+  function NativeExecutionInspectorButton() {
+    return h("button", { type: "button", title: "打开 AeroAgent 执行观测栏", "aria-label": "打开 AeroAgent 执行观测栏",
       onClick: () => ctx.sidebarRight.openTab("aeroagent-inspector"), style: { display: "inline-grid", placeItems: "center",
         width: 30, height: 30, padding: 0, border: 0, borderRadius: 6, background: "transparent",
         color: "inherit", cursor: "pointer" } }, h(NativeIcon, { name: "observe", size: 18 }));
@@ -576,7 +593,7 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
                 border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 5, fontSize: 11 } }, order.status)),
               h("td", { style: cell }, h("button", { type: "button", "aria-pressed": selected,
                 "aria-label": `${selected ? "继续" : "选择"}${order.flight_no}退改对话`,
-                onClick: () => { selection.select(userId, order); ctx.layout.selectPanel("aeroagent-chat"); },
+                onClick: () => { selection.select(userId, order); openNativeAeroConversation(ctx); },
                 style: selected ? primaryButton : secondaryButton }, selected ? "继续对话" : "选择并对话")));
           }))));
     }
@@ -741,6 +758,50 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
           h("span", null, conversation.caseId ? `案件 ${conversation.caseId}` : "未创建案件"))));
   }
 
+  function NativeChatRedirect() {
+    React.useEffect(() => { openNativeAeroConversation(ctx); }, []);
+    return h("main", { "data-aeroagent-native-page": "chat-redirect", style: { boxSizing: "border-box",
+      display: "grid", placeItems: "center", height: "100%", background: "var(--dsw-alias-bg-base)",
+      color: "var(--dsw-alias-label-secondary)", font: "inherit", fontSize: 13 } }, "正在打开 DSH 原生退改会话…");
+  }
+  function NativeOrderContextBar({ inputActions } = {}) {
+    const { userId, user } = useNativeUser();
+    const order = useSelectedOrder(userId);
+    if (!order) {
+      return h("section", { "data-aeroagent-order-context-bar": "empty", "aria-label": "AeroAgent 客票上下文条",
+        style: { boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "space-between",
+          gap: 12, marginBottom: 8, padding: "7px 10px", border: "1px solid var(--dsw-alias-border-l1)",
+          borderRadius: 8, background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-secondary)",
+          fontSize: 12 } },
+        h("span", null, `${user.name} · 尚未绑定退改客票`),
+        h("button", { type: "button", onClick: () => ctx.layout.selectPanel("aeroagent-orders"),
+          style: { ...secondaryButton, padding: "4px 9px", fontSize: 11 } }, "选择客票"));
+    }
+    const flight = order.flight || {};
+    const fill = (prompt) => inputActions?.setDraft?.(`@${order.order_id} ${prompt}`);
+    return h("section", { "data-aeroagent-order-context-bar": order.order_id, "aria-label": "AeroAgent 客票上下文条",
+      style: { boxSizing: "border-box", marginBottom: 8, padding: "8px 10px", border: "1px solid var(--dsw-alias-border-l1)",
+        borderRadius: 8, background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-primary)",
+        fontSize: 12 } },
+      h("div", { style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 } },
+        h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "5px 10px" } },
+          h("strong", null, `${order.flight_no} · ${flight.origin_city || flight.origin || "—"} → ${flight.dest_city || flight.dest || "—"}`),
+          h("span", { style: { color: "var(--dsw-alias-label-secondary)" } }, `${order.date || "—"} ${flight.dep_time || ""} · ${order.status}`),
+          h("code", { style: { color: "var(--dsw-alias-label-tertiary)", fontSize: 10 } }, order.order_id)),
+        h("button", { type: "button", onClick: () => ctx.layout.selectPanel("aeroagent-orders"),
+          style: { ...secondaryButton, flex: "0 0 auto", padding: "3px 8px", fontSize: 10 } }, "更换客票")),
+      h("div", { "aria-label": "退改快捷操作", style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 } },
+        h("button", { type: "button", onClick: () => ctx.layout.selectPanel("aeroagent-orders"),
+          style: { ...secondaryButton, padding: "3px 8px", fontSize: 10 } }, "查询订单"),
+        h("button", { type: "button", onClick: () => fill("帮我改签到后天，请生成可选方案，并说明差价和手续费。"),
+          style: { ...secondaryButton, padding: "3px 8px", fontSize: 10 } }, "生成改签方案"),
+        h("button", { type: "button", onClick: () => fill("航班取消了，请按当前票规计算退票费和最终退款。"),
+          style: { ...secondaryButton, padding: "3px 8px", fontSize: 10 } }, "退票"),
+        h("button", { type: "button", onClick: () => fill("请分别给出改签和退票方案，比较费用后再由我选择。"),
+          style: { ...secondaryButton, padding: "3px 8px", fontSize: 10 } }, "改签 + 退票"),
+        h("span", { style: { alignSelf: "center", color: "var(--dsw-alias-label-tertiary)", fontSize: 10 } },
+          "仅填入输入框，不会自动发送或创建案件")));
+  }
   function learningPage(id, title, description, actions, ...content) {
     return h("main", { "data-aeroagent-native-page": id, style: { boxSizing: "border-box", height: "100%",
       overflow: "auto", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", font: "inherit" } },
@@ -1093,11 +1154,11 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
     name: "sidebar.brand.name", id: "dsh-plugin-aeroagent",
   }, BrandName));
   ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
-    name: "sidebar.footer.action", id: "aeroagent-learning", order: -20,
-  }, NativeLearningNavigation));
-  ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
-    name: "sidebar.footer.action", id: "aeroagent-user", order: -10,
-  }, NativeUserSwitcher));
+    name: "sidebar.footer.action", id: "aeroagent-footer", order: -20,
+  }, NativeFooterNavigation));
+  ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
+    name: "conversation.input.dock", id: "aeroagent-order-context-bar", order: 10,
+  }, NativeOrderContextBar));
 
   for (const page of NATIVE_PAGES) {
     const panelId = `aeroagent-${page.id}`;
@@ -1131,7 +1192,7 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
               style: { ...primaryButton, marginTop: 24 } }, "打开 DSH 原生对话") : null)));
     }
     ctx.slots.inject("main", () => ctx.slots.register({ name: "main", key: panelId },
-      page.id === "orders" ? NativeOrdersPage : page.id === "chat" ? NativeChatPage : NativePage));
+      page.id === "orders" ? NativeOrdersPage : page.id === "chat" ? NativeChatRedirect : NativePage));
     ctx.slots.inject("sidebar.panellist", () => ctx.slots.register({
       name: "sidebar.panellist", id: panelId, order: page.order, label: () => page.label,
     }, ({ size = 20 }) => h(NativeIcon, { name: page.icon, size })));
@@ -1150,10 +1211,10 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
   else registerInspector();
   ctx.slots.inject("sidebar.right.pane.tab", () => ctx.slots.register({
     name: "sidebar.right.pane.tab", key: "dsh-plugin-aeroagent",
-  }, InspectorPage));
+  }, NativeExecutionInspector));
   ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({
-    name: "conversation.session.header.utilities", id: "aeroagent-inspector", order: 20,
-  }, InspectorButton));
+    name: "conversation.session.header.utilities", id: "aeroagent-execution-inspector", order: 20,
+  }, NativeExecutionInspectorButton));
   if (typeof window !== "undefined") window.__AERO_CLIENT_LOADED = true;
   return { users, selection, conversations, watches };
 }
@@ -1187,7 +1248,7 @@ globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
   { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing,
     quoteStateAfter, followAction, traceEventKey, verificationView, quoteCardState, bootstrapDshUI, nativeSlotsApply,
     fetchNativeOrders, createNativeOrderSelection, parseNativeCompletion, fetchNativeChat, createNativeConversationStore,
-    nativeOrderBindingStatus, NATIVE_DEMO_USERS, createNativeUserStore, createNativeWatchStore, scrollNativeChatToLatest,
+    nativeOrderBindingStatus, openNativeAeroConversation, NATIVE_DEMO_USERS, createNativeUserStore, createNativeWatchStore, scrollNativeChatToLatest,
     fetchNativeAdmin, fetchNativeRules, fetchNativeEvaluation, startNativeEvaluation, fetchNativeDemoData,
     filterNativeEvaluationCases, isNativeEvaluationTerminal });
 if (typeof window !== "undefined" && window.__ModuleLoader__ && !globalThis.__AERO_DSH_MODULE_REGISTERED) {

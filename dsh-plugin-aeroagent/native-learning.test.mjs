@@ -153,10 +153,15 @@ test("registers learning navigation and main pages only through native DSH slots
   for (const id of ["evaluation", "rules", "data"]) {
     assert.ok(calls.some((call) => call.name === "main" && call.key === `aeroagent-${id}`));
   }
-  const navigation = calls.find((call) => call.name === "sidebar.footer.action" && call.id === "aeroagent-learning");
-  assert.ok(navigation);
-  const buttons = findNodes(navigation.component(), (node) => node.type === "button");
+  const footer = calls.find((call) => call.name === "sidebar.footer.action" && call.id === "aeroagent-footer");
+  assert.ok(footer);
+  const tree = footer.component();
+  const [learning] = findNodes(tree, (node) => node.props?.["data-aeroagent-learning-nav"] === "");
+  assert.ok(learning, "learning navigation must be a full-width row group");
+  assert.equal(learning.props.style.gridTemplateColumns, undefined);
+  const buttons = findNodes(tree, (node) => node.type === "button");
   assert.deepEqual(buttons.map((button) => textOf(button)), ["评测", "规则", "数据"]);
+  for (const button of buttons) assert.equal(button.props.style.width, "100%");
   buttons[0].props.onClick();
   buttons[1].props.onClick();
   buttons[2].props.onClick();

@@ -2,15 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "./client.js";
 
-function findButton(node) {
-  if (!node || typeof node !== "object") return null;
-  if (node.type === "button") return node;
-  for (const child of node.props?.children || []) {
-    const match = findButton(child);
-    if (match) return match;
-  }
-  return null;
-}
+const { openNativeAeroConversation } = globalThis.AeroAgentClient || {};
+
+test("opens the native conversation so the session rightbar remains mounted", () => {
+  const selections = [];
+  openNativeAeroConversation({ layout: { selectPanel(id) { selections.push(id); } } });
+  assert.deepEqual(selections, [null]);
+});
 
 test("registers AeroAgent through native DSH slots instead of replacing the host shell", () => {
   assert.equal(typeof globalThis.AeroAgentClient.nativeSlotsApply, "function");
@@ -34,32 +32,6 @@ test("registers AeroAgent through native DSH slots instead of replacing the host
   }
   assert.ok(calls.some((call) => call.type === "right-tab" && call.kind === "aeroagent-inspector"));
   assert.ok(calls.some((call) => call.name === "sidebar.right.pane.tab" && call.key === "dsh-plugin-aeroagent"));
-  assert.ok(calls.some((call) => call.name === "conversation.session.header.utilities" && call.id === "aeroagent-inspector"));
-});
-
-test("returns to the real DSH conversation panel so its session rightbar stays mounted", () => {
-  const calls = [];
-  const selections = [];
-  const ctx = {
-    slots: {
-      inject(_name, factory) { factory(); },
-      register(options, component) { calls.push({ ...options, component }); },
-    },
-    sidebarRightTabs: { register() {} },
-    sidebarRight: { openTab() {} },
-    layout: { selectPanel(id) { selections.push(id); } },
-  };
-  const React = {
-    createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
-    useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
-    useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
-    useRef: (value) => ({ current: value }),
-    useEffect: () => {},
-  };
-  globalThis.AeroAgentClient.nativeSlotsApply(ctx, React);
-  const chat = calls.find((call) => call.name === "main" && call.key === "aeroagent-chat");
-  const button = findButton(chat.component());
-  assert.ok(button);
-  button.props.onClick();
-  assert.deepEqual(selections, [null]);
+  assert.ok(calls.some((call) => call.name === "conversation.session.header.utilities" && call.id === "aeroagent-execution-inspector"));
+  assert.ok(calls.some((call) => call.name === "conversation.input.dock" && call.id === "aeroagent-order-context-bar"));
 });
