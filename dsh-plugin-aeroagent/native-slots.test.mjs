@@ -49,7 +49,14 @@ test("returns to the real DSH conversation panel so its session rightbar stays m
     sidebarRight: { openTab() {} },
     layout: { selectPanel(id) { selections.push(id); } },
   };
-  globalThis.AeroAgentClient.nativeSlotsApply(ctx);
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
+    useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+    useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
+    useRef: (value) => ({ current: value }),
+    useEffect: () => {},
+  };
+  globalThis.AeroAgentClient.nativeSlotsApply(ctx, React);
   const chat = calls.find((call) => call.name === "main" && call.key === "aeroagent-chat");
   const button = findButton(chat.component());
   assert.ok(button);
