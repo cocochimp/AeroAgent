@@ -1,6 +1,8 @@
 """在进程内消费会话、履约和评测任务，并负责 Outbox 投递。"""
 import asyncio
 import json
+import logging
+import os
 from pathlib import Path
 
 from sqlalchemy import select
@@ -12,6 +14,11 @@ from app.application.cases.service import run_case_turn, utcnow
 from app.application.agents.transaction_agent import ConfirmedQuoteCommand, TicketTransactionAgent
 from app.adapters.outbound.telemetry.tracing import configure_tracing
 from app import evaluation
+from app.application.monitoring import evaluate_all_watches
+
+logger = logging.getLogger(__name__)
+WATCH_EVALUATION_INTERVAL_SECONDS = max(1.0, float(os.getenv(
+    "AEROAGENT_WATCH_INTERVAL_SECONDS", "60")))
 
 
 async def _save_progress(run_id: str, progress: dict) -> None:
@@ -143,11 +150,20 @@ async def _dispatch_outbox(streams: Streams) -> None:
 
 
 async def run_worker() -> None:
-    """轮询 Outbox 并消费异步任务；失败消息按次数重试，超过上限进入死信。"""
+    """轮询 Outbox、消费异步任务，并仅在后端运行期间定时评估 SQL 价格监控。"""
     configure_tracing("aeroagent-worker")
     streams = Streams()
+    next_watch_evaluation = 0.0
     try:
         while True:
+            loop = asyncio.get_running_loop()
+            if loop.time() >= next_watch_evaluation:
+                try:
+                    await evaluate_all_watches()
+                except Exception:
+                    # 监控失败不能中断案件与履约消费；下一轮仍会按持久化状态重试。
+                    logger.exception("Scheduled price-watch evaluation failed")
+                next_watch_evaluation = loop.time() + WATCH_EVALUATION_INTERVAL_SECONDS
             await _dispatch_outbox(streams)
             batches = await streams.read_tasks(count=5, block_ms=1000)
             for _, messages in batches:

@@ -1,14 +1,19 @@
 """SQLAlchemy 持久化记录；领域实体不依赖 ORM。"""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     """定义 ORM 基类和 JSON 类型映射；领域实体因此无需继承数据库基类。"""
     type_annotation_map = {dict[str, Any]: JSON, list[dict[str, Any]]: JSON}
+
+
+def utcnow() -> datetime:
+    """返回带时区的持久化时间，避免各写路径混用本地时间。"""
+    return datetime.now(timezone.utc)
 
 
 class ProfileRecord(Base):
@@ -24,7 +29,8 @@ class ProfileRecord(Base):
 class FlightRecord(Base):
     """持久化航班计划、状态和分票种票价；航班号与日期共同唯一。"""
     __tablename__ = "flights"
-    __table_args__ = (UniqueConstraint("flight_no", "date", name="uq_flight_no_date"),)
+    __table_args__ = (UniqueConstraint("flight_no", "date", name="uq_flight_no_date"),
+                      Index("ix_flight_route_date", "origin", "dest", "date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     flight_no: Mapped[str] = mapped_column(String(16), index=True)
@@ -42,8 +48,9 @@ class FlightRecord(Base):
 
 
 class OrderRecord(Base):
-    """持久化用户订单和当前票号；退改履约直接更新其航班与状态。"""
+    """持久化用户订单、服务端价格快照和创建/支付时间；票号在出票后分配。"""
     __tablename__ = "orders"
+    __table_args__ = (Index("ix_orders_user_created", "user_id", "created_at"),)
 
     order_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("profiles.user_id"), index=True)
@@ -55,8 +62,84 @@ class OrderRecord(Base):
     fare_product: Mapped[str] = mapped_column(String(40))
     fare: Mapped[int] = mapped_column(Integer)
     tax: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), default="CNY", server_default="CNY")
     status: Mapped[str] = mapped_column(String(24), default="ISSUED")
     ticket_no: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                  server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                  onupdate=utcnow, server_default=func.now())
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BookingAttemptRecord(Base):
+    """关联待支付订单与支付幂等键；金额快照只保存在订单写侧。"""
+    __tablename__ = "booking_attempts"
+
+    booking_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.order_id"), unique=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("profiles.user_id"), index=True)
+    payment_idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PriceWatchRecord(Base):
+    """持久化用户低价监控及创建时基线；目标价和百分比阈值至少配置一项。"""
+    __tablename__ = "price_watches"
+    __table_args__ = (Index("ix_price_watch_user_created", "user_id", "created_at"),)
+
+    watch_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("profiles.user_id"), index=True)
+    flight_no: Mapped[str] = mapped_column(String(16))
+    date: Mapped[str] = mapped_column(String(10))
+    fare_product: Mapped[str] = mapped_column(String(40))
+    cabin: Mapped[str] = mapped_column(String(8))
+    baseline_fare: Mapped[int] = mapped_column(Integer)
+    baseline_tax: Mapped[int] = mapped_column(Integer)
+    baseline_total: Mapped[int] = mapped_column(Integer)
+    target_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    percentage_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="CNY")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PriceObservationRecord(Base):
+    """保存每次人工或调度评估的价格观测，包括不可用状态。"""
+    __tablename__ = "price_observations"
+    __table_args__ = (Index("ix_observation_watch_created", "watch_id", "created_at"),)
+
+    observation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    watch_id: Mapped[str] = mapped_column(ForeignKey("price_watches.watch_id"), index=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    status: Mapped[str] = mapped_column(String(24), default="OBSERVED")
+    fare: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tax: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="CNY")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PriceAlertRecord(Base):
+    """保存 DSH 可读的站内提醒历史；业务键防止同价同阈值重复提醒。"""
+    __tablename__ = "price_alerts"
+    __table_args__ = (UniqueConstraint("watch_id", "dedupe_key", name="uq_price_alert_dedupe"),
+                      Index("ix_price_alert_user_created", "user_id", "created_at"),)
+
+    alert_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    watch_id: Mapped[str] = mapped_column(ForeignKey("price_watches.watch_id"), index=True)
+    observation_id: Mapped[str] = mapped_column(ForeignKey("price_observations.observation_id"), unique=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("profiles.user_id"), index=True)
+    trigger: Mapped[str] = mapped_column(String(32))
+    dedupe_key: Mapped[str] = mapped_column(String(160))
+    baseline_total: Mapped[int] = mapped_column(Integer)
+    observed_total: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), default="CNY")
+    message: Mapped[str] = mapped_column(String(240))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class FeeRuleRecord(Base):
