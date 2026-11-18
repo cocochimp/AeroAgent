@@ -112,7 +112,7 @@ test("registers the browser module with the DSH combo loader", async () => {
     await import(`./client.js?dsh-registration=${Date.now()}`);
     assert.equal(registrations.length, 1);
     assert.equal(registrations[0].id, "dsh-plugin-aeroagent");
-    assert.deepEqual(registrations[0].factory().inject, []);
+    assert.deepEqual(registrations[0].factory().inject, ["slots", "layout", "sidebarRight", "sidebarRightTabs"]);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
