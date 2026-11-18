@@ -162,6 +162,75 @@ def test_http_error_status_controls_retryable_policy():
     assert caught.value.retryable is False
 
 
+def test_http_400_includes_structured_provider_error_without_request_prompt():
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    client = DeepSeekClient(transport=httpx.MockTransport(lambda request: httpx.Response(400, json={
+        "error": {"message": "messages.3.content must be a string",
+                  "type": "invalid_request_error", "code": "invalid_messages"},
+    })), strict=True)
+
+    with pytest.raises(LLMError) as caught:
+        client.chat([{"role": "user", "content": "PRIVATE_FULL_PROMPT"}])
+
+    message = str(caught.value)
+    assert caught.value.code == "LLM_REQUEST_FAILED"
+    assert caught.value.retryable is False
+    assert "HTTP 400" in message
+    assert "messages.3.content must be a string" in message
+    assert "invalid_request_error" in message
+    assert "invalid_messages" in message
+    assert "PRIVATE_FULL_PROMPT" not in message
+    assert "Authorization" not in message
+
+
+@pytest.mark.parametrize("body", ["not-json", "<html><body>provider proxy failure</body></html>"])
+def test_http_error_non_json_or_html_uses_generic_status_message(body):
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    client = DeepSeekClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(400, text=body)), strict=True)
+
+    with pytest.raises(LLMError) as caught:
+        client.chat([])
+
+    message = str(caught.value)
+    assert message.startswith("HTTPStatusError:")
+    assert body not in message
+    assert caught.value.code == "LLM_REQUEST_FAILED"
+    assert caught.value.retryable is False
+
+
+def test_http_error_malformed_structured_body_uses_generic_status_message():
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    client = DeepSeekClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+        400, json={"error": {"message": 123}})), strict=True)
+
+    with pytest.raises(LLMError) as caught:
+        client.chat([])
+
+    assert str(caught.value).startswith("HTTPStatusError:")
+    assert "123" not in str(caught.value)
+
+
+def test_http_error_redacts_secret_like_content_and_bounds_message():
+    secret = "sk-live-secret-123456"
+    provider_message = f"Authorization: Bearer {secret}; api_key={secret}; invalid request " + "x" * 1000
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    client = DeepSeekClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+        400, json={"error": {"message": provider_message, "type": "invalid_request_error"}})), strict=True)
+
+    with pytest.raises(LLMError) as caught:
+        client.chat([{"role": "user", "content": "PRIVATE_FULL_PROMPT"}])
+
+    message = str(caught.value)
+    assert secret not in message
+    assert "sk-test-000000" not in message
+    assert "PRIVATE_FULL_PROMPT" not in message
+    assert "<redacted>" in message
+    assert len(message) <= 320
+    assert caught.value.code == "LLM_REQUEST_FAILED"
+    assert caught.value.retryable is False
+
+
 def test_timeout_has_stable_structured_error_code():
     S.update({"llm": {"api_key": "sk-test-000000"}})
 

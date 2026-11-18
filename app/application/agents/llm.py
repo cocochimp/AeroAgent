@@ -1,5 +1,6 @@
 """DeepSeek（OpenAI 兼容）客户端与测试用 FakeLLM。任何异常都抛 LLMError，由调用方降级。"""
 import json
+import re
 import httpx
 from pydantic import BaseModel, ValidationError
 from app import config as S
@@ -26,6 +27,47 @@ class _Intents(BaseModel):
 
 def _invalid_response(detail: str) -> LLMError:
     return LLMError(f"响应格式异常：{detail}", code="LLM_RESPONSE_INVALID", retryable=True)
+
+
+def _redact_provider_text(text: str) -> str:
+    """只清洗供应商错误摘要；请求消息、请求头和原始响应正文从不进入该函数。"""
+    text = re.sub(r"(?i)\b(authorization|api[_-]?key)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+",
+                  r"\1=<redacted>", text)
+    text = re.sub(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{4,}", "Bearer <redacted>", text)
+    return re.sub(r"\bsk-[a-z0-9_-]{4,}\b", "<redacted>", text, flags=re.I)
+
+
+def _http_status_message(exc: httpx.HTTPStatusError) -> str:
+    """提取有界供应商错误摘要；JSON/HTML 结构异常时保留原有通用状态信息。"""
+    generic = f"{type(exc).__name__}: {exc}"
+    try:
+        payload = exc.response.json()
+    except (ValueError, AttributeError):
+        return generic
+    if not isinstance(payload, dict) or not isinstance(payload.get("error"), dict):
+        return generic
+    error = payload["error"]
+    raw_message = error.get("message")
+    if not isinstance(raw_message, str):
+        return generic
+    message = " ".join(raw_message.split())
+    if not message or re.search(r"<[^>]+>", message):
+        return generic
+    message = _redact_provider_text(message)
+    if not message:
+        return generic
+    if len(message) > 240:
+        message = message[:237].rstrip() + "..."
+    details = []
+    for field in ("code", "type"):
+        value = error.get(field)
+        if isinstance(value, int) and not isinstance(value, bool):
+            value = str(value)
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
+            details.append(f"{field}={value}")
+    suffix = f" ({', '.join(details)})" if details else ""
+    result = f"HTTP {exc.response.status_code}: {message}{suffix}"
+    return result if len(result) <= 320 else result[:317].rstrip() + "..."
 
 
 class DeepSeekClient:
@@ -60,7 +102,7 @@ class DeepSeekClient:
             raise LLMError(f"{type(exc).__name__}: {exc}", code="LLM_TIMEOUT", retryable=True) from exc
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            raise LLMError(f"{type(exc).__name__}: {exc}", code="LLM_REQUEST_FAILED",
+            raise LLMError(_http_status_message(exc), code="LLM_REQUEST_FAILED",
                            retryable=status in {408, 429} or status >= 500) from exc
         except httpx.HTTPError as exc:
             raise LLMError(f"{type(exc).__name__}: {exc}", code="LLM_REQUEST_FAILED", retryable=True) from exc
