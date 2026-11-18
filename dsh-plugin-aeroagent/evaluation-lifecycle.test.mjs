@@ -6,7 +6,7 @@ import { mount } from "./web/pages/eval.js";
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise((res) => { resolve = res; }); return { promise, resolve }; };
 
-async function setup({ startRun, detail }) {
+async function setup({ startRun, detail, historyRuns = [] }) {
   const dom = new JSDOM("<!doctype html><body><main id=\"outlet\"></main></body>", { url: "http://127.0.0.1:3080" });
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;
@@ -18,8 +18,9 @@ async function setup({ startRun, detail }) {
   const api = {
     get: async (path) => {
       if (path === "/admin/evaluations?view=cases") return { version: "v1", cases: [{ id: "case_1", question: "退票", expect: {} }] };
-      if (path === "/admin/evaluations?view=runs") return { runs: [] };
+      if (path === "/admin/evaluations?view=runs") return { runs: historyRuns };
       if (path.includes("view=run&run_id=run_new")) return detail.promise;
+      if (path.includes("view=run&run_id=run_history")) return { run_id: "run_history", status: "SUCCEEDED", mode: "offline", progress: { completed: 1, total: 1 }, report: {} };
       throw new Error(`unexpected GET ${path}`);
     },
     put: async () => ({ version: "v2", count: 1 }),
@@ -28,7 +29,7 @@ async function setup({ startRun, detail }) {
   const outlet = document.getElementById("outlet");
   const cleanup = await mount({ outlet, api, store, signal: controller.signal, isCurrent: () => true });
   const button = [...outlet.querySelectorAll("button")].find((node) => node.textContent === "保存并运行");
-  return { dom, button, get starts() { return starts; }, cleanup: () => {
+  return { dom, outlet, button, get starts() { return starts; }, cleanup: () => {
     cleanup(); controller.abort();
     if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
     if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
@@ -62,5 +63,28 @@ test("startup failure releases the run action without creating a duplicate", asy
     assert.equal(context.starts, 1);
     assert.equal(context.button.disabled, false);
     assert.match(document.querySelector("#outlet").textContent, /startup failed/);
+  } finally { context.cleanup(); }
+});
+
+test("opening terminal history cannot bypass the active execution gate", async () => {
+  const detail = deferred();
+  const context = await setup({
+    startRun: () => ({ run_id: "run_new", status: "QUEUED" }),
+    detail,
+    historyRuns: [{ run_id: "run_history", status: "SUCCEEDED", mode: "offline", progress: { completed: 1, total: 1 } }],
+  });
+  try {
+    context.button.click();
+    await flush();
+    assert.equal(context.starts, 1);
+    assert.equal(context.button.disabled, true);
+    const historical = [...context.outlet.querySelectorAll(".aa-run-row")].find((node) => node.textContent.includes("run_history"));
+    historical.click();
+    await flush();
+    assert.match(context.outlet.querySelector(".aa-eval-result").textContent, /run_history/);
+    assert.equal(context.button.disabled, true);
+    context.button.click();
+    await flush();
+    assert.equal(context.starts, 1);
   } finally { context.cleanup(); }
 });

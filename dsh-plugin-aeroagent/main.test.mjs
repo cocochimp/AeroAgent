@@ -36,46 +36,69 @@ test("auto-mount waits for DOMContentLoaded before marking readiness", () => {
   assert.equal(window.__AERO_CLIENT_LOADED, true);
 });
 
-test("moves native DSH plugin/automation actions into More without duplicating host navigation", () => {
+test("moves actual DSH plugin/automation actions into More and hides the duplicate host sidebar root", () => {
   const dom = new JSDOM(`<!doctype html><body>
-    <aside id="host-sidebar">
-      <nav class="hHd-Xa_panelList" aria-label="宿主导航">
-        <button id="native-plugin" aria-label="插件">插件</button>
-        <button id="native-automation" aria-label="自动化">自动化</button>
-        <button id="native-other" aria-label="其他">其他</button>
-      </nav>
-      <nav id="host-history" aria-label="会话历史"><button>宿主历史</button></nav>
+    <aside id="host-sidebar" class="hHd-Xa_root" style="display:flex" data-left-navigation>
+      <div class="hHd-Xa_sidebarContent">
+        <nav class="hHd-Xa_panelList" aria-label="宿主导航">
+          <button id="native-plugin" aria-label="插件">插件</button>
+          <button id="native-automation" aria-label="自动化任务">自动化任务</button>
+          <button id="native-more" aria-label="更多">更多</button>
+          <button id="native-workspace" aria-label="工作区">工作区</button>
+        </nav>
+        <nav id="host-history" aria-label="会话历史"><button>宿主历史</button></nav>
+      </div>
     </aside>
-    <main id="root"><textarea data-composer-input="true"></textarea></main>`, { url: "http://127.0.0.1:3080" });
+    <main id="root"><textarea data-composer-input="true"></textarea><button id="host-send">发送</button></main>
+    <div id="aeroagent-dsh-root"><aside id="aeroagent-sidebar" data-left-navigation>
+      <nav id="aeroagent-business" aria-label="业务导航"></nav>
+      <div id="aero-more" class="aa-more-menu"></div>
+    </aside></div>`, { url: "http://127.0.0.1:3080" });
   const { document } = dom.window;
-  const moreMenu = document.createElement("div");
-  moreMenu.className = "aa-more-menu";
-  document.body.append(moreMenu);
+  const moreMenu = document.getElementById("aero-more");
+  const hostRoot = document.querySelector(".hHd-Xa_root");
+  const isRendered = (node) => {
+    for (let current = node; current; current = current.parentElement) {
+      if (current.hidden || current.style.display === "none") return false;
+    }
+    return true;
+  };
   let pluginClicks = 0;
   let automationClicks = 0;
+  let hostSends = 0;
   document.getElementById("native-plugin").addEventListener("click", () => { pluginClicks += 1; });
   document.getElementById("native-automation").addEventListener("click", () => { automationClicks += 1; });
+  document.getElementById("host-send").addEventListener("click", () => { hostSends += 1; });
 
   const integration = integrateDshHost({ document, moreMenu });
   integration.sync();
   const plugin = document.getElementById("native-plugin");
   const automation = document.getElementById("native-automation");
-  assert.equal(plugin.parentElement.closest(".aa-more-menu"), moreMenu);
-  assert.equal(automation.parentElement.closest(".aa-more-menu"), moreMenu);
-  assert.equal(document.querySelector("nav.hHd-Xa_panelList").hidden, true);
-  assert.equal(document.getElementById("host-history").hidden, true);
+  assert.equal(plugin.closest(".aa-more-menu"), moreMenu);
+  assert.equal(automation.closest(".aa-more-menu"), moreMenu);
+  assert.equal(hostRoot.contains(plugin), false);
+  assert.equal(hostRoot.contains(automation), false);
+  assert.equal(hostRoot.hidden, true);
+  assert.equal(hostRoot.style.display, "none");
+  assert.equal(dom.window.getComputedStyle(hostRoot).display, "none");
+  assert.equal(isRendered(document.getElementById("native-more")), false);
+  assert.equal(isRendered(document.getElementById("native-workspace")), false);
+  const visibleLeftNavigation = [...document.querySelectorAll("[data-left-navigation]")].filter(isRendered);
+  assert.deepEqual(visibleLeftNavigation.map((node) => node.id), ["aeroagent-sidebar"]);
   assert.equal(document.getElementById("root").isConnected, true);
-  assert.equal(document.getElementById("root").hidden, false);
-  plugin.click(); automation.click();
+  assert.equal(isRendered(document.getElementById("root")), true);
+  plugin.click(); automation.click(); document.getElementById("host-send").click();
   assert.equal(pluginClicks, 1);
   assert.equal(automationClicks, 1);
-  assert.equal(document.querySelectorAll("#native-plugin").length, 1);
-  assert.equal(document.querySelectorAll("#native-automation").length, 1);
+  assert.equal(hostSends, 1);
+  assert.equal(moreMenu.querySelectorAll("#native-plugin, #native-automation").length, 2);
+  assert.equal(hostRoot.querySelectorAll("#native-plugin, #native-automation").length, 0);
 
   integration.restore();
   assert.equal(document.querySelector("nav.hHd-Xa_panelList").contains(plugin), true);
   assert.equal(document.querySelector("nav.hHd-Xa_panelList").contains(automation), true);
-  assert.equal(document.querySelector("nav.hHd-Xa_panelList").hidden, false);
+  assert.equal(hostRoot.hidden, false);
+  assert.equal(hostRoot.style.display, "flex");
   assert.equal(document.getElementById("host-history").hidden, false);
   dom.window.close();
 });

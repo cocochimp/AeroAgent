@@ -22,6 +22,10 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
   let version = "";
   let runs = [];
   let activeRun = null;
+  let viewedRunId = null;
+  let runningRunId = null;
+  let runningRunStatus = null;
+  let viewGeneration = 0;
   let compareRun = null;
   let selected = new Set();
   let mode = "offline";
@@ -59,11 +63,19 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
   }
 
   function syncRunButton() {
-    runButton.disabled = startingRun || Boolean(activeRun && !terminal(activeRun.status));
+    runButton.disabled = startingRun || Boolean(runningRunId && !terminal(runningRunStatus));
+  }
+
+  function updateExecution(run) {
+    if (!run || runningRunId !== run.run_id) return;
+    runningRunStatus = run.status;
+    if (terminal(run.status)) runningRunId = null;
   }
 
   function renderRun(run) {
     activeRun = run;
+    viewedRunId = run?.run_id || null;
+    updateExecution(run);
     syncRunButton();
     const report = run?.report || {};
     const summary = report.summary || {};
@@ -103,14 +115,16 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
   }
 
   async function openRun(runId) {
-    const own = ++pollGeneration;
-    clearTimeout(pollTimer);
+    const ownView = ++viewGeneration;
     try {
       const run = await api.get(`/admin/evaluations?view=run&run_id=${encodeURIComponent(runId)}`, auth);
-      if (!isCurrent() || own !== pollGeneration) return;
+      if (!isCurrent() || ownView !== viewGeneration) return;
       renderRun(run); drawHistory();
-      if (!terminal(run.status)) poll(runId, own);
-    } catch (error) { if (!isAbort(error, signal)) setNotice(error.message, "error"); }
+      if (!terminal(run.status)) {
+        if (!runningRunId) { runningRunId = runId; runningRunStatus = run.status; syncRunButton(); }
+        if (runningRunId === runId) poll(runId);
+      }
+    } catch (error) { if (!isAbort(error, signal) && ownView === viewGeneration) setNotice(error.message, "error"); }
   }
 
   async function poll(runId, own = ++pollGeneration) {
@@ -122,7 +136,8 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
       try {
         const run = await api.get(`/admin/evaluations?view=run&run_id=${encodeURIComponent(runId)}`, auth);
         if (!isCurrent() || own !== pollGeneration) return;
-        renderRun(run);
+        if (viewedRunId === runId) renderRun(run);
+        else { updateExecution(run); syncRunButton(); }
         if (terminal(run.status)) { await refreshRuns(); return; }
       } catch (error) { if (!isAbort(error, signal)) setNotice(error.message, "error"); return; }
     }
@@ -140,7 +155,7 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
   }
 
   async function runEvaluation() {
-    if (startingRun || (activeRun && !terminal(activeRun.status))) return;
+    if (startingRun || (runningRunId && !terminal(runningRunStatus))) return;
     startingRun = true;
     syncRunButton();
     try {
@@ -148,6 +163,8 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
       if (!currentCases().length) throw new Error("评测集为空");
       const started = await api.post("/admin/evaluations/runs", { mode, case_ids: selected.size ? [...selected] : null }, auth);
       if (!isCurrent()) return;
+      runningRunId = started.run_id;
+      runningRunStatus = started.status;
       activeRun = { ...started, mode, progress: started.progress || { completed: 0, total: currentCases().length }, report: started.report || {} };
       renderRun(activeRun);
       setNotice(`评测运行已排队：${started.run_id}`);
@@ -203,5 +220,5 @@ export async function mount({ outlet, api, store, signal, isCurrent }) {
     caseList.replaceChildren(stateView("error", "评测数据加载失败", error.message));
     history.replaceChildren(stateView("error", "运行历史加载失败", error.message));
   }
-  return () => { generation += 1; pollGeneration += 1; clearTimeout(pollTimer); };
+  return () => { generation += 1; viewGeneration += 1; pollGeneration += 1; clearTimeout(pollTimer); };
 }

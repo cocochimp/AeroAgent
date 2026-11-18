@@ -4,10 +4,10 @@ import { BUSINESS_NAV, LEARNING_NAV, PAGE_LOADERS, createRouter } from "./router
 import { createStore } from "./store.js";
 
 const NATIVE_ACTION_SELECTOR = [
-  "button[aria-label='插件']", "button[aria-label='自动化']", "button[aria-label='自动任务']",
-  "[role='button'][aria-label='插件']", "[role='button'][aria-label='自动化']", "[role='button'][aria-label='自动任务']",
+  "button[aria-label='插件']", "button[aria-label='自动化']", "button[aria-label='自动任务']", "button[aria-label='自动化任务']",
+  "[role='button'][aria-label='插件']", "[role='button'][aria-label='自动化']", "[role='button'][aria-label='自动任务']", "[role='button'][aria-label='自动化任务']",
 ].join(",");
-const HOST_NAV_SELECTOR = "nav.hHd-Xa_panelList, nav[aria-label='会话历史'], nav[aria-label='对话历史']";
+const HOST_NAV_SELECTOR = ".hHd-Xa_root, nav.hHd-Xa_panelList, nav[aria-label='会话历史'], nav[aria-label='对话历史']";
 
 /** Move native DSH actions without cloning them, preserving their original event handlers. */
 export function integrateDshHost({ document: doc = globalThis.document, moreMenu } = {}) {
@@ -37,8 +37,9 @@ export function integrateDshHost({ document: doc = globalThis.document, moreMenu
     }
     for (const nav of doc.querySelectorAll(HOST_NAV_SELECTOR)) {
       if (nav.closest("#aeroagent-dsh-root") || hidden.has(nav)) continue;
-      hidden.set(nav, nav.hidden);
+      hidden.set(nav, { hidden: nav.hidden, display: nav.style.display });
       nav.hidden = true;
+      nav.style.display = "none";
       nav.setAttribute("data-aeroagent-host-hidden", "true");
     }
   }
@@ -51,8 +52,9 @@ export function integrateDshHost({ document: doc = globalThis.document, moreMenu
         record.parent.insertBefore(node, reference);
       }
     }
-    for (const [nav, wasHidden] of hidden) {
-      nav.hidden = wasHidden;
+    for (const [nav, state] of hidden) {
+      nav.hidden = state.hidden;
+      nav.style.display = state.display;
       nav.removeAttribute("data-aeroagent-host-hidden");
     }
     nativeContainer?.remove();
