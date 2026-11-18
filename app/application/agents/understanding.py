@@ -1,13 +1,14 @@
 """工作二：订单字段对齐、意图与多诉求拆解、指代消解、日期换算、Step-back、HyDE。"""
 import re
 from datetime import date, timedelta
+from zoneinfo import ZoneInfo
 from app.adapters.outbound.sqlite import data
 from app.application import fee_engine as engine, seed
 from app import config as S
 from app.application.agents.models import INTENT_LABEL, ParsedQuery, SubQuery
 
 WEEK = "一二三四五六日"
-DATE_PHRASE = (r"\d{4}-\d{2}-\d{2}|大后天|后天|明天|今天|下下(?:周|星期)[一二三四五六日天]|"
+DATE_PHRASE = (r"\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}|大后天|后天|明天|今天|下下(?:周|星期)[一二三四五六日天]|"
                r"下(?:周|星期)[一二三四五六日天]|(?:周|星期)[一二三四五六日天]|\d{1,2}月\d{1,2}[号日]?|\d{1,2}[号日]")
 VAGUE_DATE = r"下个?月初|下个?月底|月初|月底|过几天|过两天|节后|年后"
 INTENT_PATTERNS = [
@@ -33,8 +34,9 @@ KIND_LABEL = {"VOLUNTARY_CHANGE": "自愿改签", "VOLUNTARY_REFUND": "自愿退
 
 
 def today() -> date:
-    """从可配置时钟读取当前日期；让日期换算和测试使用同一时间基准。"""
-    return S.now().date()
+    """读取 Asia/Shanghai 的当前日期；无时区的演示时钟按上海本地时间解释。"""
+    now = S.now()
+    return now.astimezone(ZoneInfo("Asia/Shanghai")).date() if now.tzinfo else now.date()
 
 
 def _next_month_day(month: int, day: int, d0: date) -> str | None:
@@ -43,7 +45,7 @@ def _next_month_day(month: int, day: int, d0: date) -> str | None:
             c = date(y, month, day)
         except ValueError:
             continue
-        if c >= d0:
+        if c > d0:
             return c.isoformat()
     return None
 
@@ -55,7 +57,7 @@ def _next_day_of_month(day: int, d0: date) -> str | None:
             c = date(y, m, day)
         except ValueError:
             c = None
-        if c and c >= d0:
+        if c and c > d0:
             return c.isoformat()
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
     return None
@@ -67,12 +69,14 @@ def resolve_date(text: str) -> str | None:
     t, d0 = text.strip(), today()
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", t):
         try:
-            return date.fromisoformat(t).isoformat()
+            candidate = date.fromisoformat(t)
+            return candidate.isoformat() if candidate > d0 else None
         except ValueError:
             return None
     rel = {"今天": 0, "明天": 1, "后天": 2, "大后天": 3}
     if t in rel:
-        return (d0 + timedelta(days=rel[t])).isoformat()
+        candidate = d0 + timedelta(days=rel[t])
+        return candidate.isoformat() if candidate > d0 else None
     m = re.fullmatch(r"(下下|下)?(?:周|星期)([一二三四五六日天])", t)
     if m:
         wd = WEEK.index(m.group(2).replace("天", "日"))
@@ -82,6 +86,9 @@ def resolve_date(text: str) -> str | None:
         delta = wd - d0.weekday()
         return (d0 + timedelta(days=delta if delta > 0 else delta + 7)).isoformat()
     m = re.fullmatch(r"(\d{1,2})月(\d{1,2})[号日]?", t)
+    if m:
+        return _next_month_day(int(m.group(1)), int(m.group(2)), d0)
+    m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})", t)
     if m:
         return _next_month_day(int(m.group(1)), int(m.group(2)), d0)
     m = re.fullmatch(r"(\d{1,2})[号日]", t)
@@ -192,10 +199,19 @@ def _flight_scenario(order) -> str | None:
     return None
 
 
+def format_date_label(value: str) -> str:
+    """把 ISO 日期展示为 ISO+星期；非法或原始模糊短语保持原样。"""
+    try:
+        parsed = date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{parsed.isoformat()}（周{WEEK[parsed.weekday()]}）"
+
+
 def date_options(n=5):
     """生成未来若干天的追问选项；标签与标准日期同时返回，避免二次解析展示文本。"""
     d0 = today()
-    return [{"label": f"{(d0 + timedelta(days=i)).isoformat()}（{'周' + WEEK[(d0 + timedelta(days=i)).weekday()]}）",
+    return [{"label": format_date_label((d0 + timedelta(days=i)).isoformat()),
              "value": (d0 + timedelta(days=i)).isoformat()} for i in range(1, n + 1)]
 
 
@@ -218,9 +234,12 @@ def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
         intent = ctx.get("forced_intent") or inherited or "POLICY"
         guessed = not (ctx.get("forced_intent") or inherited)
         subs = [SubQuery(intent=intent, text=question, target_date=find_date(question) if intent == "CHANGE" else None)]
-    for s in subs:   # 改签日期可能写在别的分句里；forced_date 是本轮追问刚拿到的值（图里每轮重置），优先于文本
+    forced_date = ctx.get("forced_date")
+    if forced_date:
+        forced_date = resolve_date(str(forced_date)) or str(forced_date)
+    for s in subs:   # 追问答案先换算成绝对未来日期；无法确定的原文留给 Schema 错误与再次追问
         if s.intent == "CHANGE":
-            s.target_date = ctx.get("forced_date") or s.target_date or find_date(question)
+            s.target_date = forced_date or s.target_date or find_date(question)
 
     p = ParsedQuery(intents=[s.intent for s in subs], sub_queries=subs)
     oid = resolve_order(question, ctx)

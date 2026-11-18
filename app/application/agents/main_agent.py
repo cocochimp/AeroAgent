@@ -21,12 +21,13 @@ class MainServiceAgent:
         return False
 
     def run_turn(self, session_id: str, user_id: str, message: str, *, order_id: str | None = None,
-                 on_event=None):
+                 mode=None, strict=False, on_event=None):
         """把会话交给 LangGraph 编排器；保持主 Agent 门面与现有图驱动解耦。"""
         from app.application.agents import orchestrator as legacy_graph
-        return legacy_graph.run_turn(session_id, user_id, message, order_id=order_id, on_event=on_event)
+        return legacy_graph.run_turn(session_id, user_id, message, order_id=order_id,
+                                     mode=mode, strict=strict, on_event=on_event)
 
-    def resume(self, session_id: str, payload: dict, *, on_event=None):
+    def resume(self, session_id: str, payload: dict, *, mode=None, strict=False, on_event=None):
         """恢复编排器中的中断会话；用于追问和交易确认后的继续执行。"""
         from app.application.agents import orchestrator as legacy_graph
-        return legacy_graph.resume(session_id, payload, on_event=on_event)
+        return legacy_graph.resume(session_id, payload, mode=mode, strict=strict, on_event=on_event)

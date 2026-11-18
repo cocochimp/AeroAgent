@@ -38,6 +38,12 @@ def test_template_scheme_passes_verify():
     ]
 
 
+def test_change_response_displays_iso_date_with_weekday():
+    s = scheme.generate(_results()[:1])
+    assert "2026-09-29（周二）" in s.text
+    assert "2026-09-29（周二）" in s.options[0].title
+
+
 def test_wrong_amount_detected():
     res = _results()
     s = scheme.generate(res).model_dump()

@@ -353,7 +353,7 @@ def run_cases(cases: list[dict], mode: str = "offline", run_id: str | None = Non
             on_progress({"type": "progress", "done": i, "total": len(cases), "case_id": r["case_id"],
                          "passed": r["passed"]})
     return {"id": run_id, "created_at": datetime.now().isoformat(timespec="seconds"), "mode": mode,
-            "config": S.get(), "summary": summarize(results), "results": results}
+            "config": S.redacted(), "summary": summarize(results), "results": results}
 
 
 # ---------------- CLI ----------------

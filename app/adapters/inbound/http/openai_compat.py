@@ -1,19 +1,30 @@
 """OpenAI 兼容端点：让 DSH 等外部宿主把 AeroAgent 当作模型提供方接入。"""
 import json
 import re
+import sqlite3
+import threading
 import time
 import uuid
+from collections import defaultdict, deque
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from app import config as S
+from app.adapters.outbound.sqlite import data
 from app.application.agents import orchestrator
+from app.application.agents.llm import LLMError
 
 router = APIRouter(tags=["openai-compat"])
 
 _ORDER_INTENT = re.compile(r"(订单|order|列表|list)", re.I)
 _SERVICING_INTENT = re.compile(r"(退票|改签|refund|change)", re.I)
+_MODEL_MODES = {"aeroagent-mock": "mock", "aeroagent-deepseek": "deepseek"}
+_TITLE_SYSTEM_PREFIX = "Create a concise title for an AI coding-assistant session from the supplied human messages."
+_TITLE_USER_PREFIX = "Generate the session title from this JSON array of human messages:"
+_request_times = defaultdict(deque)
+_request_lock = threading.Lock()
 
 
 class CompatMessage(BaseModel):
@@ -31,10 +42,45 @@ class CompatRequest(BaseModel):
     messages: list[CompatMessage] = Field(default_factory=list)
     stream: bool = False
     tools: list[dict] = Field(default_factory=list)
+    user: str | None = None
+    metadata: dict = Field(default_factory=dict)
 
 
 def _tool_names(request: CompatRequest) -> set[str]:
     return {((t.get("function") or {}).get("name") or "") for t in request.tools}
+
+
+def _mode_for_model(model: str) -> str:
+    try:
+        return _MODEL_MODES[model]
+    except KeyError as exc:
+        raise HTTPException(400, detail={"code": "UNKNOWN_MODEL", "message": f"不支持的模型：{model}"}) from exc
+
+
+def _is_title_request(request: CompatRequest) -> bool:
+    if request.tools:
+        return False
+    system = any(m.role == "system" and (m.content or "").strip().startswith(_TITLE_SYSTEM_PREFIX)
+                 for m in request.messages)
+    user = any(m.role == "user" and (m.content or "").strip().startswith(_TITLE_USER_PREFIX)
+               for m in request.messages)
+    return system and user
+
+
+def _local_title(request: CompatRequest) -> str:
+    """从宿主已提供的消息生成短标题；不进入案件图，也不调用任何模型。"""
+    message = next(m for m in reversed(request.messages)
+                   if m.role == "user" and (m.content or "").strip().startswith(_TITLE_USER_PREFIX))
+    raw = message.content.strip()[len(_TITLE_USER_PREFIX):].strip()
+    try:
+        entries = json.loads(raw)
+        for entry in entries:
+            text = entry if isinstance(entry, str) else entry.get("content", "")
+            if text and not _is_host_metadata(text):
+                return re.sub(r"\s+", " ", text).strip()[:60] or "AeroAgent Session"
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+    return "AeroAgent Session"
 
 
 def _is_host_metadata(content: str) -> bool:
@@ -72,11 +118,41 @@ def _parse_order_id(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _explicit_user_id(request: CompatRequest) -> str | None:
+    value = request.metadata.get("user_id") or request.user
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
+        raise HTTPException(400, detail={"code": "INVALID_USER", "message": "用户元数据无效"})
+    return value
+
+
+def _request_identity(request: CompatRequest) -> tuple[str | None, str | None]:
+    """优先以选中订单的归属确定用户；显式身份与订单冲突时拒绝跨用户访问。"""
+    user_id = _explicit_user_id(request)
+    order_id = (request.metadata.get("selected_order_id") or request.metadata.get("order_id")
+                or _parse_order_id(_last_user(request)))
+    if order_id is not None and not isinstance(order_id, str):
+        raise HTTPException(400, detail={"code": "INVALID_ORDER", "message": "订单元数据无效"})
+    if not order_id:
+        return user_id, None
+    try:
+        order = data.get_order(order_id)
+    except sqlite3.OperationalError:
+        # 单元调用方可在未启动投影时模拟案件；真实路由会在写案件前再次核验订单。
+        return user_id, order_id
+    if order is None:
+        raise HTTPException(404, detail={"code": "ORDER_NOT_FOUND", "message": "订单不存在"})
+    if user_id and order["user_id"] != user_id:
+        raise HTTPException(404, detail={"code": "ORDER_NOT_FOUND", "message": "订单不存在或无权访问"})
+    return order["user_id"], order_id
+
+
 _CASE_FENCE = re.compile(r"```aeroagent-case\s*(\{[\s\S]*?\})\s*```")
 
 
-def _latest_case_id(request: CompatRequest) -> str | None:
-    """从宿主回传的最近 assistant 元数据中恢复案件，不依赖宿主私有会话字段。"""
+def _latest_case_metadata(request: CompatRequest) -> dict:
+    """从宿主回传的最近 assistant 元数据中恢复案件及其既有用户身份。"""
     for message in reversed(request.messages):
         if message.role != "assistant" or not message.content:
             continue
@@ -84,17 +160,24 @@ def _latest_case_id(request: CompatRequest) -> str | None:
         if not match:
             continue
         try:
-            case_id = json.loads(match.group(1)).get("case_id")
+            payload = json.loads(match.group(1))
         except json.JSONDecodeError:
             continue
+        case_id = payload.get("case_id")
         if isinstance(case_id, str) and case_id.startswith("case_"):
-            return case_id
-    return None
+            user_id = payload.get("user_id")
+            return {"case_id": case_id, "user_id": user_id if isinstance(user_id, str) else None}
+    return {}
 
 
-def _case_fence(case_id: str) -> str:
-    """生成客户端隐藏、宿主下一轮原样回传的案件标记。"""
-    return f"```aeroagent-case\n{json.dumps({'case_id': case_id})}\n```"
+def _latest_case_id(request: CompatRequest) -> str | None:
+    return _latest_case_metadata(request).get("case_id")
+
+
+def _case_fence(case_id: str, user_id: str | None = None) -> str:
+    """生成客户端隐藏、宿主下一轮原样回传的案件与用户标记。"""
+    payload = {"case_id": case_id, **({"user_id": user_id} if user_id else {})}
+    return f"```aeroagent-case\n{json.dumps(payload)}\n```"
 
 
 def _quote_payload(quote, case_id: str) -> dict:
@@ -108,50 +191,66 @@ def _quote_payload(quote, case_id: str) -> dict:
             "target": detail.get("target") or pricing.get("target")}
 
 
-async def _run_servicing_case(message: str, case_id: str | None = None) -> dict:
-    """创建或恢复真实案件；追问沿用会话，待确认报价只能由确认卡继续。"""
+async def _run_servicing_case(message: str, case_id: str | None = None, *, mode="mock",
+                              user_id: str | None = None, order_id: str | None = None,
+                              strict: bool | None = None) -> dict:
+    """创建或恢复真实案件；用户、模式和严格策略仅沿本案请求传递。"""
     from sqlalchemy import select
 
     from app.adapters.outbound.postgres.database import SessionFactory
     from app.adapters.outbound.postgres.models import QuoteRecord, ServiceCaseRecord
     from app.application.cases.service import run_case_turn, utcnow
 
-    explicit_order_id = _parse_order_id(message)
+    if mode not in {"mock", "offline", "deepseek"}:
+        raise HTTPException(400, detail={"code": "UNKNOWN_MODE", "message": "不支持的决策模式"})
+    strict = bool(strict) and mode == "deepseek" if strict is not None else mode == "deepseek"
+    explicit_order_id = order_id or _parse_order_id(message)
+    if explicit_order_id:
+        selected_order = data.get_order(explicit_order_id)
+        if selected_order is None:
+            raise HTTPException(404, detail={"code": "ORDER_NOT_FOUND", "message": "订单不存在"})
+        if user_id and selected_order["user_id"] != user_id:
+            raise HTTPException(404, detail={"code": "ORDER_NOT_FOUND", "message": "订单不存在或无权访问"})
+        user_id = selected_order["user_id"]
     clean = _ORDER_TOKEN.sub("", message).strip() or message
     case = None
     if case_id:
         async with SessionFactory() as session:
             candidate = await session.get(ServiceCaseRecord, case_id)
-            if candidate and candidate.user_id == "u_zhang":
-                case = candidate
-        if case and case.status == "RESULT_UNKNOWN":
-            return {"case_id": case.case_id, "status": "RESULT_UNKNOWN",
+        if candidate is None or (user_id and candidate.user_id != user_id):
+            raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "案件不存在"})
+        case = candidate
+        user_id = case.user_id
+        if case.status == "RESULT_UNKNOWN":
+            return {"case_id": case.case_id, "user_id": user_id, "status": "RESULT_UNKNOWN",
                     "final": "上一笔办理结果仍待核对，请先核对航司与订单状态；在结果明确前不会创建新案件或新报价。"}
         # 显式切换到另一订单或已结束旧案件时，开始独立的新案件。
-        if case and ((explicit_order_id and case.order_id and explicit_order_id != case.order_id) or
-                     case.status in {"COMPLETED", "CANCELLED", "HUMAN_REVIEW"}):
+        if ((explicit_order_id and case.order_id and explicit_order_id != case.order_id) or
+                case.status in {"COMPLETED", "CANCELLED", "HUMAN_REVIEW"}):
             case = None
             case_id = None
 
     pending = orchestrator.pending_interrupt(case.session_id) if case else None
     if case is None:
+        if not user_id:
+            raise HTTPException(400, detail={"code": "USER_REQUIRED", "message": "请提供用户身份或选择订单"})
         case_id = f"case_{uuid.uuid4().hex}"
         session_id = f"compat_{uuid.uuid4().hex}"
-        order_id = explicit_order_id
+        resolved_order_id = explicit_order_id
         now = utcnow()
         async with SessionFactory() as session:
-            session.add(ServiceCaseRecord(case_id=case_id, user_id="u_zhang", order_id=order_id,
+            session.add(ServiceCaseRecord(case_id=case_id, user_id=user_id, order_id=resolved_order_id,
                                           status="OPEN", intent=None, session_id=session_id,
                                           created_at=now, updated_at=now,
                                           current_quote_id=None, result={}))
             await session.commit()
     else:
         session_id = case.session_id
-        order_id = explicit_order_id or case.order_id
+        resolved_order_id = explicit_order_id or case.order_id
 
     if not (pending and pending.get("kind") == "confirm"):
-        payload = {"case_id": case_id, "session_id": session_id, "user_id": "u_zhang",
-                   "message": clean, "order_id": order_id}
+        payload = {"case_id": case_id, "session_id": session_id, "user_id": user_id,
+                   "message": clean, "order_id": resolved_order_id, "mode": mode, "strict": strict}
         if pending:
             payload["resume_payload"] = {"value": clean}
         await run_case_turn(payload)
@@ -160,7 +259,8 @@ async def _run_servicing_case(message: str, case_id: str | None = None) -> dict:
         case = await session.get(ServiceCaseRecord, case_id)
         quotes = list(await session.scalars(select(QuoteRecord).where(QuoteRecord.case_id == case_id)
                                             .order_by(QuoteRecord.created_at)))
-    out = {"case_id": case_id, "status": case.status if case else "UNKNOWN"}
+    out = {"case_id": case_id, "user_id": case.user_id if case else user_id,
+           "status": case.status if case else "UNKNOWN"}
     offered = [quote for quote in quotes if quote.status == "OFFERED"]
     if offered:
         out["quotes"] = [_quote_payload(quote, case_id) for quote in offered]
@@ -189,25 +289,57 @@ def _render_case_result(result: dict) -> str:
         parts.append((final.get("text") or json.dumps(final, ensure_ascii=False))
                      if isinstance(final, dict) else str(final))
     if result.get("case_id"):
-        parts.append(_case_fence(result["case_id"]))
+        parts.append(_case_fence(result["case_id"], result.get("user_id")))
     return "\n".join(parts)
 
 
 async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] | None]:
-    """决定本轮返回普通文本还是 tool_call；mock 档在宿主提供业务工具时优先委派。"""
+    """先本地分类宿主流量，再按显式模型档处理业务消息。"""
+    mode = _mode_for_model(request.model)
+    if _is_title_request(request):
+        return _local_title(request), None
     tool_content = _last_tool_content(request)
     if tool_content is not None:
         return f"【AeroAgent】工具返回：{tool_content[:1500]}", None
-    case_id = _latest_case_id(request)
+    if not _last_user(request) and any(m.role == "user" and m.content and _is_host_metadata(m.content)
+                                       for m in request.messages):
+        return "", None
+    case_metadata = _latest_case_metadata(request)
+    case_id = case_metadata.get("case_id")
+    user_id, selected_order_id = _request_identity(request)
+    case_user_id = case_metadata.get("user_id")
+    if case_user_id and user_id and case_user_id != user_id:
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "案件不存在"})
+    user_id = user_id or case_user_id
     names = _tool_names(request)
     if (not case_id and "aeroagent_list_orders" in names and _ORDER_INTENT.search(_last_user(request))
             and not _SERVICING_INTENT.search(_last_user(request))):
+        if not user_id:
+            raise HTTPException(400, detail={"code": "USER_REQUIRED", "message": "请提供用户身份或选择订单"})
         call = [{"index": 0, "id": f"call_{uuid.uuid4().hex}", "type": "function",
                  "function": {"name": "aeroagent_list_orders",
-                              "arguments": json.dumps({"user_id": "u_zhang"})}}]
+                              "arguments": json.dumps({"user_id": user_id})}}]
         return "", call
-    result = await _run_servicing_case(_last_user(request), case_id)
+    result = await _run_servicing_case(_last_user(request), case_id, mode=mode, user_id=user_id,
+                                       order_id=selected_order_id, strict=mode == "deepseek")
     return _render_case_result(result), None
+
+
+def _throttle(raw_request: Request, request: CompatRequest) -> None:
+    """按用户隔离一分钟滑动窗口；匿名流量仅按客户端地址共享限额。"""
+    user_id = _explicit_user_id(request) or _latest_case_metadata(request).get("user_id")
+    host = raw_request.client.host if raw_request.client else "unknown"
+    key = f"user:{user_id}" if user_id else f"host:{host}"
+    now = time.monotonic()
+    limit = S.get()["compat"]["requests_per_minute"]
+    with _request_lock:
+        recent = _request_times[key]
+        while recent and recent[0] <= now - 60:
+            recent.popleft()
+        if len(recent) >= limit:
+            raise HTTPException(429, detail={"code": "RATE_LIMITED", "message": "请求过于频繁，请稍后重试",
+                                             "details": {"retryable": True}}, headers={"Retry-After": "60"})
+        recent.append(now)
 
 
 def _usage(content: str) -> dict:
@@ -225,9 +357,19 @@ async def list_models():
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(request: CompatRequest):
+async def chat_completions(request: CompatRequest, raw_request: Request):
     """OpenAI chat/completions 兼容入口；stream 时按 SSE 分片返回。"""
-    content, tool_calls = await _completion_content(request)
+    _mode_for_model(request.model)
+    _throttle(raw_request, request)
+    try:
+        content, tool_calls = await _completion_content(request)
+    except LLMError as exc:
+        details = {"retryable": exc.retryable}
+        if getattr(exc, "case_id", None):
+            details["case_id"] = exc.case_id
+        detail = {"code": exc.code, "message": str(exc), "details": details}
+        raise HTTPException(504 if exc.code == "LLM_TIMEOUT" else 503, detail=detail,
+                            headers={"Retry-After": "1"} if exc.retryable else None) from exc
     created = int(time.time())
     base = {"id": f"chatcmpl-{uuid.uuid4().hex}", "created": created, "model": request.model}
     if not request.stream:

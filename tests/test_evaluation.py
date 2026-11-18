@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app import config as S
 from app import evaluation as E
 
 
@@ -55,6 +56,16 @@ def test_run_subset_and_summary():
               "tokens_avg", "failure_reasons", "by_group"):
         assert k in s
     assert run["results"][0]["actual"]["tools"]
+
+
+def test_evaluation_config_snapshot_fully_redacts_api_key():
+    secret = "sk-evaluation-secret"
+    S.update({"llm": {"api_key": secret}})
+
+    run = E.run_cases([], mode="offline", run_id="redaction")
+
+    assert run["config"]["llm"]["api_key"] == "****"
+    assert secret not in json.dumps(run, ensure_ascii=False)
 
 
 def test_full_gold_offline_baseline():

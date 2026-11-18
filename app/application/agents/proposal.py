@@ -29,10 +29,12 @@ def _option(r: dict) -> tuple[SchemeOption, str]:
     if r["intent"] == "CHANGE":
         t = fee["target"]
         items = [FeeItem(name="改期费", amount=fee["change_fee"]), FeeItem(name="票面差价", amount=fee["fare_diff"])]
+        from app.application.agents.understanding import format_date_label
+        date_label = format_date_label(t["date"])
         head = "因航班非自愿变动，" if fee["involuntary"] else f"当前处于{fee['window_label']}档，"
-        text = (f"{head}改签至{t['date']} {t['flight_no']}（{t['dep_time']}）：改期费{fee['change_fee']}元，"
+        text = (f"{head}改签至{date_label} {t['flight_no']}（{t['dep_time']}）：改期费{fee['change_fee']}元，"
                 f"票面差价{fee['fare_diff']}元，合计需支付{fee['total']}元。")
-        return (SchemeOption(type="CHANGE", title=f"改签至 {t['date']} {t['flight_no']}", fee_items=items,
+        return (SchemeOption(type="CHANGE", title=f"改签至 {date_label} {t['flight_no']}", fee_items=items,
                              total=fee["total"], rule_refs=refs), text)
     items = [FeeItem(name="退票费", amount=fee["refund_fee"]), FeeItem(name="机场建设费退还", amount=fee["tax"])]
     head = "因航班非自愿变动，" if fee["involuntary"] else f"当前处于{fee['window_label']}档，"

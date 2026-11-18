@@ -21,6 +21,44 @@ def test_resolve_dates():
     assert query.resolve_date("下个月初") is None
 
 
+def test_dotted_date_uses_next_future_occurrence():
+    assert query.resolve_date("11.23") == "2026-11-23"
+    assert query.find_date("改到11.23") == "2026-11-23"
+
+
+def test_dotted_date_rolls_into_next_year():
+    S.set_now(datetime(2026, 12, 30, 10, 0))
+    assert query.resolve_date("1.2") == "2027-01-02"
+
+
+def test_impossible_dotted_date_is_never_guessed():
+    assert query.resolve_date("2.30") is None
+    p = query.understand("改到2.30", ctx(selected_order_id=f"ORD{D}001"))
+    assert p.sub_queries[0].target_date == "2.30"
+
+
+def test_dates_are_strictly_in_the_shanghai_future():
+    S.set_now(datetime(2026, 11, 23, 16, 30, tzinfo=timezone.utc))  # 上海已是 11 月 24 日
+    assert query.resolve_date("11.24") == "2027-11-24"
+    assert query.resolve_date("2026-11-24") is None
+    assert query.resolve_date("11.25") == "2026-11-25"
+
+
+def test_today_is_not_a_target_and_month_day_uses_next_occurrence():
+    assert query.resolve_date("今天") is None
+    assert query.resolve_date("2026-09-26") is None
+    assert query.resolve_date("2026-09-25") is None
+    assert query.resolve_date("9月26日") == "2027-09-26"
+    assert query.resolve_date("9.25") == "2027-09-25"
+
+
+def test_weekday_clarification_is_normalized_before_tool_schema():
+    S.set_now(datetime(2026, 10, 1, 10, 0))  # 星期四
+    p = query.understand("改到下个月初", ctx(
+        selected_order_id=f"ORD{D}001", forced_date="星期四"))
+    assert p.sub_queries[0].target_date == "2026-10-08"
+
+
 def test_multi_intent_split_and_dates():
     p = query.understand("帮我改到大后天，顺便看看退票多少钱", ctx(selected_order_id=f"ORD{D}001"))
     assert [s.intent for s in p.sub_queries] == ["CHANGE", "REFUND"]
@@ -89,7 +127,7 @@ def test_step_back_and_hyde_text():
 
 
 # ---------- review fixes ----------
-from datetime import datetime
+from datetime import datetime, timezone
 import pytest
 from app import config as S
 

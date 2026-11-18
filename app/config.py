@@ -6,8 +6,9 @@ import copy
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = Path(os.environ.get("AIR_CONFIG_PATH", ROOT / "config.json"))
@@ -16,7 +17,8 @@ VAR_DIR = Path(os.environ.get("AIR_VAR_DIR", ROOT / "var"))
 DEFAULTS = {
     "mode": "mock",                         # mock | deepseek（offline 为兼容别名）
     "llm": {"base_url": "https://api.deepseek.com", "api_key": "", "model": "deepseek-chat",
-            "timeout": 30},
+            "timeout": 30, "max_calls_per_turn": 24},
+    "compat": {"requests_per_minute": 60},
     "query": {"clarify_threshold": 0.6, "step_back_min_hits": 2},
     "planner": {"max_rounds": 5, "max_tool_retries": 1},
     "retrieval": {"backend": os.environ.get("AIR_RETRIEVAL", "hybrid"),   # hybrid | fallback
@@ -77,12 +79,25 @@ MIN_TOKEN_BUDGET = 200      # 系统提示 + 订单信息必须放得下，且�
 def _validate(cfg):
     if cfg["memory"]["token_budget"] < MIN_TOKEN_BUDGET:
         raise ValueError(f"memory.token_budget 不能小于 {MIN_TOKEN_BUDGET}")
+    if cfg["llm"]["max_calls_per_turn"] < 1:
+        raise ValueError("llm.max_calls_per_turn 不能小于 1")
+    if cfg["compat"]["requests_per_minute"] < 1:
+        raise ValueError("compat.requests_per_minute 不能小于 1")
+
+
+def _environment_overrides():
+    """读取 DeepSeek 环境配置；环境变量优先于文件且不会写入覆盖项或磁盘。"""
+    values = {"api_key": os.environ.get("DEEPSEEK_API_KEY"),
+              "base_url": os.environ.get("DEEPSEEK_BASE_URL"),
+              "model": os.environ.get("DEEPSEEK_MODEL")}
+    return {"llm": {key: value for key, value in values.items() if value is not None}}
 
 
 def _load():
     cfg = copy.deepcopy(DEFAULTS)
     overrides = json.loads(CONFIG_PATH.read_text("utf-8")) if CONFIG_PATH.exists() else {}
     _merge(cfg, overrides)
+    _merge(cfg, _environment_overrides())
     _validate(cfg)
     return cfg, overrides
 
@@ -119,10 +134,10 @@ def reset():
     """仅供测试使用：会删除 config.json。"""
     global _cfg, _overrides
     with _lock:
-        _cfg = copy.deepcopy(DEFAULTS)
         _overrides = {}
         if CONFIG_PATH.exists():
             CONFIG_PATH.unlink()
+        _cfg, _overrides = _load()
 
 
 def public():
@@ -133,6 +148,13 @@ def public():
     return cfg
 
 
+def redacted():
+    """给持久化报告用的完整脱敏快照；不保留密钥首尾片段。"""
+    cfg = copy.deepcopy(get())
+    cfg["llm"]["api_key"] = "****" if cfg["llm"]["api_key"] else ""
+    return cfg
+
+
 def set_now(value):
     """设置可注入的当前时间；评测和测试借此固定日期边界。"""
     global _now
@@ -140,5 +162,6 @@ def set_now(value):
 
 
 def now() -> datetime:
-    """返回注入时间或当前分钟时间；统一去掉秒和微秒以保证演示确定性。"""
-    return _now or datetime.now().replace(second=0, microsecond=0)
+    """返回注入时间或上海当前分钟；生产时钟与日期换算使用同一业务时区。"""
+    return _now or datetime.now(timezone.utc).astimezone(
+        ZoneInfo("Asia/Shanghai")).replace(tzinfo=None, second=0, microsecond=0)

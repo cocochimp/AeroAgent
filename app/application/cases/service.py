@@ -7,6 +7,7 @@ from opentelemetry import trace
 from sqlalchemy import select, update
 
 from app.application.agents.main_agent import MainServiceAgent
+from app.application.agents.llm import LLMError
 
 from app.adapters.outbound.postgres.database import SessionFactory
 from app.adapters.outbound.postgres.models import (
@@ -122,10 +123,24 @@ async def run_case_turn(payload: dict) -> dict:
         try:
             if payload.get("resume_payload") is not None:
                 result = await asyncio.to_thread(_main_agent.resume, session_id, payload["resume_payload"],
+                                                 mode=payload.get("mode"), strict=payload.get("strict", False),
                                                  on_event=on_event)
             else:
                 result = await asyncio.to_thread(_main_agent.run_turn, session_id, user_id, payload["message"],
-                                                 order_id=payload.get("order_id"), on_event=on_event)
+                                                 order_id=payload.get("order_id"), mode=payload.get("mode"),
+                                                 strict=payload.get("strict", False), on_event=on_event)
+        except LLMError as exc:
+            # 模型尚未产生交易结果，不能伪装成交易结果未知；保留案件供用户显式重试。
+            exc.case_id = case_id
+            await record_case_event(case_id, "case.failed", {
+                "error_type": type(exc).__name__, "message": "模型服务调用失败，案件已保留供重试。"})
+            async with SessionFactory() as failed_session:
+                case = await failed_session.get(ServiceCaseRecord, case_id)
+                if case:
+                    case.updated_at = utcnow()
+                    case.result = {"error": {"code": exc.code, "retryable": exc.retryable}}
+                    await failed_session.commit()
+            raise
         except Exception as exc:
             await record_case_event(case_id, "case.failed", {
                 "error_type": type(exc).__name__, "message": "本轮处理未完成，已保留此前运行事件。"})

@@ -7,13 +7,17 @@ from app.application.agents.models import SchemeOutput, SubQuery
 
 
 class LLMError(Exception):
-    """统一表示模型调用和响应解析失败；上层据此触发规则降级。"""
-    pass
+    """统一表示模型调用和响应解析失败；携带可供用户重试的结构化信息。"""
+    def __init__(self, message, *, code="LLM_REQUEST_FAILED", retryable=True):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
 
 
 class LLMNotConfigured(LLMError):
     """表示在线模型缺少必要配置；与运行时调用异常区分以便启动检查。"""
-    pass
+    def __init__(self, message):
+        super().__init__(message, code="LLM_NOT_CONFIGURED", retryable=False)
 
 
 class _Intents(BaseModel):
@@ -22,12 +26,21 @@ class _Intents(BaseModel):
 
 class DeepSeekClient:
     """封装 OpenAI 兼容模型调用；业务方法失败时返回降级信号，底层协议错误统一抛出。"""
-    def __init__(self, transport=None):
+    def __init__(self, transport=None, *, strict=False):
         cfg = S.get()["llm"]
         self.model = cfg["model"]
+        self.strict = strict
         self.http = httpx.Client(base_url=cfg["base_url"], timeout=cfg["timeout"], transport=transport,
                                  headers={"Authorization": f"Bearer {cfg['api_key']}"})
         self.usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+
+    def _optional_failure(self, exc, message):
+        """兼容调用方可使用本地降级；严格调用方必须看到原始模型或响应错误。"""
+        if self.strict:
+            if isinstance(exc, LLMError):
+                raise exc
+            raise LLMError(message, code="LLM_RESPONSE_INVALID", retryable=True) from exc
+        return None
 
     def chat(self, messages, tools=None, json_mode=False) -> dict:
         """发送低温聊天请求并累计 Token 用量；网络、状态和响应结构异常统一转换为模型错误。"""
@@ -83,8 +96,8 @@ class DeepSeekClient:
                 "\"text\":\"子诉求原文\",\"target_date\":\"改签目标日期原文或null\"}]}。不要编造日期。",
                 f"上一轮意图：{ctx.get('last_intent')}\n乘客：{question}")
             subs = _Intents.model_validate(out).sub_queries
-        except (LLMError, ValidationError):
-            return None
+        except (LLMError, ValidationError) as exc:
+            return self._optional_failure(exc, "意图拆解响应 Schema 校验失败")
         from app.application.agents.understanding import resolve_date
         for s in subs:
             if s.target_date:
@@ -96,8 +109,8 @@ class DeepSeekClient:
         try:
             return self._json("把对话压缩成一句话摘要，保留订单、日期、金额。输出 {\"summary\": \"...\"}",
                               json.dumps(turns, ensure_ascii=False)).get("summary")
-        except LLMError:
-            return None
+        except LLMError as exc:
+            return self._optional_failure(exc, "摘要生成失败")
 
     def write_scheme(self, draft: SchemeOutput, results, feedback, context):
         """润色模板方案文案；保留原结构化选项和分段文本，失败则不覆盖模板。"""
@@ -108,8 +121,8 @@ class DeepSeekClient:
         try:
             out = self._json("你是航空公司退改签客服，只能依据给定规则和金额作答。", prompt)
             return SchemeOutput(options=draft.options, text=out["text"], texts=draft.texts)
-        except (LLMError, KeyError, ValidationError):
-            return None
+        except (LLMError, KeyError, ValidationError) as exc:
+            return self._optional_failure(exc, "方案润色响应 Schema 校验失败")
 
     def fact_check(self, sentences, corpus):
         """用模型辅助发现无规则依据的句子；失败时不阻断本地确定性校验。"""
@@ -117,8 +130,8 @@ class DeepSeekClient:
             out = self._json("判断每句话能否在规则原文中找到依据。输出 {\"unsupported\": [\"无依据的句子\"]}",
                              f"规则原文：{corpus}\n句子：{json.dumps(sentences, ensure_ascii=False)}")
             return [s for s in out.get("unsupported", []) if s in sentences]
-        except LLMError:
-            return None
+        except LLMError as exc:
+            return self._optional_failure(exc, "事实核查失败")
 
 
 class FakeLLM:
@@ -157,7 +170,7 @@ class FakeLLM:
         return None
 
 
-def get_client(mode: str):
+def get_client(mode: str, *, strict=False):
     """按运行模式创建决策引擎；统一在线与离线客户端的构造入口。"""
     from app.adapters.outbound.llm.factory import create_decision_engine
-    return create_decision_engine(mode)
+    return create_decision_engine(mode, strict=strict)

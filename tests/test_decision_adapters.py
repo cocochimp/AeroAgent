@@ -6,7 +6,7 @@ from app.adapters.outbound.sqlite import data
 from app.application.agents import orchestrator as graph
 from app.application.agents import planning as planner
 from app.application.agents import understanding as query
-from app.application.agents.llm import DeepSeekClient, LLMNotConfigured
+from app.application.agents.llm import DeepSeekClient, LLMError, LLMNotConfigured
 from app.adapters.outbound.llm.factory import create_decision_engine
 
 
@@ -69,6 +69,18 @@ def test_deepseek_failure_returns_structured_fallback_error():
     assert set(result["error"]) == {"code", "message", "retryable"}
     assert result["error"]["message"]
     assert result["usage"]["calls"] == 0
+
+
+def test_strict_deepseek_failure_is_explicit_and_retryable():
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    transport = httpx.MockTransport(lambda request: httpx.Response(503, json={"error": "unavailable"}))
+    engine = create_decision_engine("deepseek", transport=transport, strict=True)
+
+    with pytest.raises(LLMError) as caught:
+        engine.decide(_state(), [])
+
+    assert caught.value.code == "LLM_REQUEST_FAILED"
+    assert caught.value.retryable is True
 
 
 def test_deepseek_fallback_is_visible_in_agent_trace():

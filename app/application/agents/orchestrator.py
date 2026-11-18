@@ -447,24 +447,35 @@ def _drive(inp, session_id, on_event=None):
             "memory": {k: mem.get(k) for k in ("order_stack", "summary", "turns", "last_intent")}}
 
 
-def run_turn(session_id, user_id, message, order_id=None, mode=None, client=None, on_event=None):
-    """启动一轮完整会话并在整轮持有会话锁；防止并发读写同一记忆。"""
+def _begin_turn(session_id):
+    client = _clients[session_id]
+    if hasattr(client, "begin_turn"):
+        client.begin_turn()
+
+
+def run_turn(session_id, user_id, message, order_id=None, mode=None, client=None, strict=False, on_event=None):
+    """启动一轮完整会话并在整轮持有会话锁；模式仅属于本请求，不写全局配置。"""
+    from app.adapters.outbound.llm.factory import create_decision_engine
     mode = mode or S.get()["mode"]
-    _clients[session_id] = client if client is not None else llm_mod.get_client(mode)
+    _clients[session_id] = (create_decision_engine(mode, client=client, strict=strict)
+                            if client is not None else llm_mod.get_client(mode, strict=strict))
+    _begin_turn(session_id)
     inp = {"session_id": session_id, "user_id": user_id, "question": message, "order_id": order_id, "mode": mode}
     with memory.session_lock(session_id):        # 整轮持锁：load_session → save_session 不被并发打断
         return _drive(inp, session_id, on_event)
 
 
-def resume(session_id, payload, client=None, on_event=None):
-    """用乘客答复恢复待追问的图；报价确认必须经 Quote API，不能恢复旧交易路径。"""
+def resume(session_id, payload, client=None, mode=None, strict=False, on_event=None):
+    """用乘客答复恢复待追问的图；重启后始终以检查点模式重建客户端。"""
+    from app.adapters.outbound.llm.factory import create_decision_engine
     with memory.session_lock(session_id):
         pending = pending_interrupt(session_id)
         if pending and pending.get("kind") == "confirm":
             raise ValueError("confirm 中断仅用于报价展示，请通过 Quote API 确认并由独立 TransactionAgent 办理")
+        checkpoint_mode = get_graph().get_state(_cfg(session_id)).values.get("mode", mode or "offline")
         if client is not None:
-            _clients[session_id] = client
-        elif session_id not in _clients:     # 服务重启后：按检查点里的模式重建客户端
-            mode = get_graph().get_state(_cfg(session_id)).values.get("mode", "offline")
-            _clients[session_id] = llm_mod.get_client(mode)
+            _clients[session_id] = create_decision_engine(checkpoint_mode, client=client, strict=strict)
+        elif session_id not in _clients:
+            _clients[session_id] = llm_mod.get_client(checkpoint_mode, strict=strict)
+        _begin_turn(session_id)
         return _drive(Command(resume=payload), session_id, on_event)
