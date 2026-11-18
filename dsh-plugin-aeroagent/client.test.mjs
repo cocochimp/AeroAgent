@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import "./client.js";
 
-const { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing, quoteStateAfter } =
-  globalThis.AeroAgentClient || {};
+const { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing,
+  quoteStateAfter, followAction, traceEventKey, verificationView } = globalThis.AeroAgentClient || {};
 
 test("parses only valid AeroAgent quote JSON", () => {
   assert.equal(parseAeroAgentQuote("ordinary text"), null);
@@ -48,6 +48,24 @@ test("accepted confirmation is processing, not success", () => {
   assert.equal(quoteStateAfter("processing", { status: "COMPLETED" }), "completed");
   assert.equal(quoteStateAfter("processing", { status: "RESULT_UNKNOWN" }), "unknown");
   assert.equal(quoteStateAfter("offered", { status: "CANCELLED" }), "cancelled");
+});
+
+test("returns requote records instead of reconnecting forever", () => {
+  assert.equal(followAction("quote.revised", { status: "WAITING_CONFIRMATION" }), "requote");
+  assert.equal(followAction("case.proposed", { status: "COMPLETED" }), "stop");
+  assert.equal(followAction("case.trace", { status: "PROCESSING" }), "continue");
+});
+
+test("deduplicates replayed traces by stable event identity", () => {
+  const event = { node: "verify", status: "ok", at: "2026-11-18T12:00:00", ms: 4 };
+  assert.equal(traceEventKey(event), traceEventKey({ ...event }));
+  assert.notEqual(traceEventKey(event), traceEventKey({ ...event, at: "2026-11-18T12:00:01" }));
+});
+
+test("missing verification is pending rather than successful", () => {
+  assert.equal(verificationView({}).kind, "pending");
+  assert.equal(verificationView({ passed: true }).kind, "success");
+  assert.equal(verificationView({ passed: false }).kind, "failure");
 });
 
 test("contains no module syntax rejected by the DSH classic-script bundle", async () => {

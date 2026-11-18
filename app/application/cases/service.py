@@ -222,7 +222,7 @@ async def create_confirmed_operation(quote_id: str, user_id: str, confirmation_i
         quote = await session.get(QuoteRecord, quote_id, with_for_update=True)
         if quote is None:
             raise LookupError("报价不存在")
-        case = await session.get(ServiceCaseRecord, quote.case_id)
+        case = await session.get(ServiceCaseRecord, quote.case_id, with_for_update=True)
         if case is None or case.user_id != user_id:
             raise PermissionError("报价不存在或无权确认")
         if quote.status in {"CONFIRMED", "EXECUTED"}:
@@ -231,6 +231,13 @@ async def create_confirmed_operation(quote_id: str, user_id: str, confirmation_i
             return await _replay_confirmed_operation(session, quote_id, confirmation_id)
         if quote.status not in {"OFFERED", "REQUOTE_REQUIRED"}:
             raise ValueError("该报价已失效，请确认最新报价")
+        if case.status != "WAITING_CONFIRMATION":
+            raise ValueError("案件当前状态不允许确认新报价，请刷新后查看")
+        active_operation = await session.scalar(select(OperationRecord).where(
+            OperationRecord.case_id == case.case_id,
+            OperationRecord.status.in_(["PENDING", "SUBMITTED", "RESULT_UNKNOWN", "SUCCEEDED"])))
+        if active_operation:
+            raise ValueError("该案件已有办理操作，请刷新后查看")
         existing = await session.scalar(select(OperationRecord).where(
             OperationRecord.idempotency_key == idempotency_key))
         if existing:
@@ -295,8 +302,18 @@ async def create_confirmed_operation(quote_id: str, user_id: str, confirmation_i
         if cas.rowcount != 1:
             await session.rollback()
             return await _replay_confirmed_operation(session, quote_id, confirmation_id)
-        case.status = "PROCESSING"
-        case.updated_at = now
+        # 同一案件只能有一个替代报价被选中；条件更新在 SQLite 并发下也强制单操作不变量。
+        selected = await session.execute(update(ServiceCaseRecord)
+            .where(ServiceCaseRecord.case_id == case.case_id,
+                   ServiceCaseRecord.status == "WAITING_CONFIRMATION")
+            .values(status="PROCESSING", current_quote_id=quote_id, updated_at=now))
+        if selected.rowcount != 1:
+            await session.rollback()
+            raise ValueError("该案件已有办理操作，请刷新后查看")
+        await session.execute(update(QuoteRecord)
+            .where(QuoteRecord.case_id == case.case_id, QuoteRecord.quote_id != quote_id,
+                   QuoteRecord.status == "OFFERED")
+            .values(status="CANCELLED"))
         session.add(OperationRecord(**operation))
         from app.adapters.outbound.postgres.models import OutboxRecord
         session.add(OutboxRecord(event_id=f"evt_{uuid.uuid4().hex}", topic="fulfillment.submit",

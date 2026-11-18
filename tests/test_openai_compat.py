@@ -139,6 +139,70 @@ def test_case_metadata_round_trips_through_assistant_history(monkeypatch):
     assert calls == [("后天", "case_abc")]
 
 
+def test_historical_tool_result_does_not_override_new_servicing_turn(monkeypatch):
+    calls = []
+
+    async def fake_run(message, case_id=None):
+        calls.append((message, case_id))
+        return {"case_id": "case_refund_after_tool", "status": "PROPOSED", "final": "退票方案"}
+
+    monkeypatch.setattr(openai_compat, "_run_servicing_case", fake_run)
+    request = openai_compat.CompatRequest(messages=[
+        {"role": "user", "content": "查询我的订单"},
+        {"role": "assistant", "content": None},
+        {"role": "tool", "tool_call_id": "call_1", "content": "Orders: ORD1 ISSUED"},
+        {"role": "assistant", "content": "【AeroAgent】工具返回：Orders: ORD1 ISSUED"},
+        {"role": "user", "content": "@ORD1 帮我办理退票"},
+    ])
+    content, tool_calls = asyncio.run(openai_compat._completion_content(request))
+    assert tool_calls is None
+    assert "退票方案" in content
+    assert calls == [("@ORD1 帮我办理退票", None)]
+
+
+def test_result_unknown_continuation_requires_reconciliation_without_new_case(monkeypatch):
+    from types import SimpleNamespace
+    from app.adapters.outbound.postgres import database
+    from app.adapters.outbound.postgres.models import ServiceCaseRecord
+    from app.application.cases import service as case_service
+
+    unknown = SimpleNamespace(case_id="case_unknown", user_id="u_zhang", order_id="ORD1",
+                              session_id="compat_unknown", status="RESULT_UNKNOWN",
+                              current_quote_id="q_unknown", result={"operation": {"status": "TIMEOUT"}})
+    created, turns = [], []
+
+    class Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return None
+        async def get(self, model, key):
+            return unknown if model is ServiceCaseRecord and key == unknown.case_id else None
+        async def scalars(self, _): return []
+        def add(self, row): created.append(row)
+        async def commit(self): pass
+
+    async def fake_turn(payload):
+        turns.append(payload)
+        return {}
+
+    monkeypatch.setattr(database, "SessionFactory", Session)
+    monkeypatch.setattr(case_service, "SessionFactory", Session)
+    monkeypatch.setattr(case_service, "run_case_turn", fake_turn)
+    result = asyncio.run(openai_compat._run_servicing_case("继续办理", unknown.case_id))
+    assert result["case_id"] == unknown.case_id
+    assert result["status"] == "RESULT_UNKNOWN"
+    assert "核对" in result["final"]
+    assert created == [] and turns == []
+
+
+def test_structured_final_without_text_serializes_instead_of_failing():
+    content = openai_compat._render_case_result({
+        "case_id": "case_human", "status": "HUMAN_REVIEW",
+        "final": {"reasons": ["需要人工核对"]},
+    })
+    assert "需要人工核对" in content
+    assert "case_human" in content
+
+
 def test_each_actionable_quote_has_its_own_fence():
     quote = {"quote_id": "q_1", "case_id": "case_abc", "order_id": "ORD1",
              "action": "REFUND", "amount": 400, "currency": "CNY",

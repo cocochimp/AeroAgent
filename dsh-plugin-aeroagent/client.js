@@ -58,13 +58,29 @@ function quoteStateAfter(_current, result) {
   return "confirming";
 }
 
+function followAction(type, record) {
+  if (type === "quote.revised" || record.status === "REQUOTE_REQUIRED" ||
+      (record.quotes || []).some((quote) => quote.status === "REQUOTE_REQUIRED")) return "requote";
+  return shouldStopFollowing(record) ? "stop" : "continue";
+}
+
+function traceEventKey(event) {
+  return JSON.stringify([event.node || "", event.at || "", event.status || ""]);
+}
+
+function verificationView(verify) {
+  if (verify.passed === true) return { kind: "success", label: "✓ 本轮结果校验通过" };
+  if (verify.passed === false) return { kind: "failure", label: "本轮结果校验未通过" };
+  return { kind: "pending", label: "暂无校验结果" };
+}
+
 const css = `
 :root{--aero-bg:#0b111c;--aero-panel:#111927;--aero-card:#151f30;--aero-line:#2a3549;--aero-text:#e8edf6;--aero-muted:#8c99ae;--aero-purple:#7e6df2;--aero-green:#42d392;--aero-amber:#f0b45b;--aero-red:#fa7286}
 #root{transition:padding-right .18s ease;box-sizing:border-box}.aero-ui,.aero-ui *{box-sizing:border-box}.aero-ui{font:12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;color:var(--aero-text)}
 .aero-nav{margin:4px 8px 8px;padding:7px 0;border-top:1px solid var(--aero-line)}.aero-nav-label{padding:3px 9px;color:var(--aero-muted);font-size:9px;letter-spacing:1.2px}.aero-nav-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}.aero-nav button{border:0;background:transparent;color:#aab6c8;border-radius:7px;padding:6px 7px;text-align:left;cursor:pointer;font-size:11px}.aero-nav button:hover{background:#7e6df21a;color:#d7ceff}.aero-nav button span{display:inline-block;width:18px;color:#a99aff}
 .aero-dock-wrap{margin:0 0 8px}.aero-dock-title{display:flex;align-items:center;color:var(--aero-muted);font-size:10px;margin:0 2px 6px}.aero-dock-title b{color:#c6cfdf;font-weight:500;margin-right:7px}.aero-dock-title span:last-child{margin-left:auto}.aero-dock{display:flex;gap:8px;overflow-x:auto;padding:1px 1px 5px;scrollbar-width:thin;scrollbar-color:#354159 transparent}.aero-card{flex:0 0 148px;border:1px solid var(--aero-line);border-radius:10px;padding:8px 10px;background:var(--aero-card);cursor:pointer;color:var(--aero-text);text-align:left}.aero-card:hover{border-color:#53617b}.aero-card.on{border-color:var(--aero-purple);box-shadow:0 0 0 1px #7e6df244;background:#1c1c35}.aero-card .fno{font-weight:700;font-family:ui-monospace,Menlo,monospace}.aero-card-top{display:flex;align-items:center;justify-content:space-between;gap:5px}.aero-route{margin:4px 0 2px}.aero-chip{font-size:9px;padding:1px 6px;border-radius:6px;border:1px solid;white-space:nowrap}.aero-chip.cancel{color:var(--aero-red);border-color:#64303a;background:#fa728510}.aero-chip.delay{color:var(--aero-amber);border-color:#60502c;background:#f0b45b10}.aero-chip.ok{color:var(--aero-green);border-color:#285b45;background:#42d39210}.aero-note{font-size:10px;color:var(--aero-muted)}.aero-quick{display:flex;gap:6px;margin-top:5px;overflow:auto}.aero-quick button{border:1px solid var(--aero-line);background:#111a28;color:#9eabc0;border-radius:99px;padding:4px 9px;cursor:pointer;font-size:9px;white-space:nowrap}.aero-quick button:hover{border-color:#6e61bb;color:#d5ccff}
 .aero-quote{border:1px solid #344159;border-radius:13px;background:linear-gradient(150deg,#162033,#101722);padding:0;margin:9px 0;color:var(--aero-text);max-width:510px;overflow:hidden;box-shadow:0 12px 30px #0003}.aero-quote-head{display:flex;align-items:center;gap:9px;padding:11px 13px;border-bottom:1px solid var(--aero-line)}.aero-quote-icon{width:29px;height:29px;border-radius:8px;background:#7e6df21c;color:#b9adff;display:grid;place-items:center}.aero-quote-title small{display:block;color:var(--aero-muted);font-size:9px}.aero-quote-state{margin-left:auto;color:var(--aero-green);border:1px solid #285943;border-radius:99px;padding:3px 7px;font-size:9px}.aero-quote-body{padding:9px 13px}.aero-quote .row{display:flex;justify-content:space-between;padding:4px 0;color:#b8c3d4}.aero-total{border-top:1px dashed #3a465d;margin-top:5px;padding-top:8px;display:flex;justify-content:space-between;align-items:end}.aero-total strong{font-size:24px;font-family:ui-monospace,Menlo,monospace}.aero-rule{color:var(--aero-muted);font-size:9px;margin-top:8px}.aero-rule b{color:#ae9fff}.aero-quote-actions{display:flex;align-items:center;gap:8px;padding:10px 13px;background:#0e1521}.aero-quote button{border:0;border-radius:8px;padding:7px 12px;cursor:pointer;font:inherit}.aero-confirm{background:var(--aero-purple);color:#fff}.aero-confirm:disabled{opacity:.6;cursor:wait}.aero-cancel{background:transparent;color:#a4b0c2;border:1px solid #3a465c!important}.aero-quote-actions small{margin-left:auto;color:#68768d;font-size:8px}.aero-quote[data-state="completed"] .aero-quote-actions,.aero-quote[data-state="cancelled"] .aero-quote-actions,.aero-quote[data-state="requote"] .aero-quote-actions,.aero-quote[data-state="unknown"] .aero-quote-actions{display:none}.aero-message{padding:8px 12px;font-size:10px}.aero-message.ok{color:var(--aero-green);background:#10251d}.aero-message.error{color:var(--aero-red);background:#2a151c}
-.aero-panel{position:fixed;top:0;right:0;width:var(--aero-inspector,340px);bottom:0;background:var(--aero-bg);border-left:1px solid var(--aero-line);z-index:60;overflow:hidden;color:var(--aero-text)}.aero-inspect-head{padding:17px 14px 11px}.aero-eyebrow{font-size:9px;color:#8878d7;letter-spacing:1.4px}.aero-inspect-head h3{margin:3px 0 0;font-size:15px}.aero-case-id{font:9px ui-monospace,Menlo,monospace;color:var(--aero-muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis}.aero-case-summary{margin:0 12px 11px;padding:9px 10px;border:1px solid var(--aero-line);border-radius:9px;background:var(--aero-panel);display:grid;grid-template-columns:1fr 1fr;gap:8px}.aero-case-summary small{display:block;color:#728198;font-size:8px}.aero-case-summary span{font-size:10px}.aero-case-state{color:var(--aero-green)!important}.aero-tabs{display:grid;grid-template-columns:repeat(4,1fr);padding:0 10px;border-bottom:1px solid var(--aero-line)}.aero-tab{border:0;border-bottom:2px solid transparent;background:transparent;color:#8492a8;padding:8px 2px;cursor:pointer}.aero-tab.on{color:#c5b9ff;border-bottom-color:var(--aero-purple)}.aero-inspect-body{height:calc(100vh - 181px);overflow:auto;padding:12px;scrollbar-width:thin;scrollbar-color:#354159 transparent}.aero-empty{color:var(--aero-muted);font-size:11px;padding:14px 4px}.aero-mini{border:1px solid var(--aero-line);background:var(--aero-panel);border-radius:9px;padding:10px;margin-bottom:9px}.aero-mini h4{font-size:10px;margin:0 0 7px}.aero-kv{display:flex;justify-content:space-between;gap:10px;padding:4px 0;color:#9eacc0;font-size:10px}.aero-kv span:last-child{color:#d7dfeb;text-align:right;word-break:break-word}.aero-timeline{list-style:none;margin:0;padding:0}.aero-step{position:relative;padding:0 0 13px 22px}.aero-step:before{content:"";position:absolute;left:5px;top:14px;bottom:0;width:1px;background:#2c3850}.aero-step:last-child:before{display:none}.aero-dot{position:absolute;left:0;top:2px;width:12px;height:12px;border:2px solid var(--aero-green);border-radius:50%;color:var(--aero-green);font-size:7px;display:grid;place-items:center}.aero-step.error .aero-dot{border-color:var(--aero-red)}.aero-step b{font-size:10px}.aero-step small{display:block;color:#728198;font-size:8px}.aero-step p,.aero-json{background:#111a28;border:1px solid #233047;border-radius:7px;padding:7px;color:#9facbf;font-size:9px;margin:4px 0 0;white-space:pre-wrap;word-break:break-word;overflow:auto;max-height:230px}.aero-bar{height:6px;border-radius:99px;background:#243047;margin:4px 0 7px;overflow:hidden}.aero-bar i{display:block;height:100%;background:linear-gradient(90deg,#6758d5,#a18fff)}.aero-verify{padding:12px;text-align:center;border:1px solid #285943;border-radius:9px;background:#10251d;color:#77dfab;margin-bottom:9px}.aero-metrics{display:grid;grid-template-columns:1fr 1fr;gap:7px}.aero-metrics div{background:var(--aero-panel);border:1px solid var(--aero-line);border-radius:8px;padding:8px}.aero-metrics small{display:block;color:var(--aero-muted);font-size:8px}.aero-metrics b{font-size:13px}
+.aero-panel{position:fixed;top:0;right:0;width:var(--aero-inspector,340px);bottom:0;background:var(--aero-bg);border-left:1px solid var(--aero-line);z-index:60;overflow:hidden;color:var(--aero-text)}.aero-inspect-head{padding:17px 14px 11px}.aero-eyebrow{font-size:9px;color:#8878d7;letter-spacing:1.4px}.aero-inspect-head h3{margin:3px 0 0;font-size:15px}.aero-case-id{font:9px ui-monospace,Menlo,monospace;color:var(--aero-muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis}.aero-case-summary{margin:0 12px 11px;padding:9px 10px;border:1px solid var(--aero-line);border-radius:9px;background:var(--aero-panel);display:grid;grid-template-columns:1fr 1fr;gap:8px}.aero-case-summary small{display:block;color:#728198;font-size:8px}.aero-case-summary span{font-size:10px}.aero-case-state{color:var(--aero-green)!important}.aero-tabs{display:grid;grid-template-columns:repeat(4,1fr);padding:0 10px;border-bottom:1px solid var(--aero-line)}.aero-tab{border:0;border-bottom:2px solid transparent;background:transparent;color:#8492a8;padding:8px 2px;cursor:pointer}.aero-tab.on{color:#c5b9ff;border-bottom-color:var(--aero-purple)}.aero-inspect-body{height:calc(100vh - 181px);overflow:auto;padding:12px;scrollbar-width:thin;scrollbar-color:#354159 transparent}.aero-empty{color:var(--aero-muted);font-size:11px;padding:14px 4px}.aero-mini{border:1px solid var(--aero-line);background:var(--aero-panel);border-radius:9px;padding:10px;margin-bottom:9px}.aero-mini h4{font-size:10px;margin:0 0 7px}.aero-kv{display:flex;justify-content:space-between;gap:10px;padding:4px 0;color:#9eacc0;font-size:10px}.aero-kv span:last-child{color:#d7dfeb;text-align:right;word-break:break-word}.aero-timeline{list-style:none;margin:0;padding:0}.aero-step{position:relative;padding:0 0 13px 22px}.aero-step:before{content:"";position:absolute;left:5px;top:14px;bottom:0;width:1px;background:#2c3850}.aero-step:last-child:before{display:none}.aero-dot{position:absolute;left:0;top:2px;width:12px;height:12px;border:2px solid var(--aero-green);border-radius:50%;color:var(--aero-green);font-size:7px;display:grid;place-items:center}.aero-step.error .aero-dot{border-color:var(--aero-red)}.aero-step b{font-size:10px}.aero-step small{display:block;color:#728198;font-size:8px}.aero-step p,.aero-json{background:#111a28;border:1px solid #233047;border-radius:7px;padding:7px;color:#9facbf;font-size:9px;margin:4px 0 0;white-space:pre-wrap;word-break:break-word;overflow:auto;max-height:230px}.aero-bar{height:6px;border-radius:99px;background:#243047;margin:4px 0 7px;overflow:hidden}.aero-bar i{display:block;height:100%;background:linear-gradient(90deg,#6758d5,#a18fff)}.aero-verify{padding:12px;text-align:center;border:1px solid #285943;border-radius:9px;background:#10251d;color:#77dfab;margin-bottom:9px}.aero-verify.pending{color:var(--aero-muted);border-color:var(--aero-line);background:var(--aero-panel)}.aero-verify.failure{color:var(--aero-red);border-color:#64303a;background:#2a151c}.aero-metrics{display:grid;grid-template-columns:1fr 1fr;gap:7px}.aero-metrics div{background:var(--aero-panel);border:1px solid var(--aero-line);border-radius:8px;padding:8px}.aero-metrics small{display:block;color:var(--aero-muted);font-size:8px}.aero-metrics b{font-size:13px}
 .aero-learning{position:fixed;top:0;bottom:0;right:var(--aero-inspector,340px);z-index:55;background:radial-gradient(circle at 40% 0,#211e3d55,transparent 36%),var(--aero-bg);padding:25px;overflow:auto;display:none}.aero-learning.on{display:block}.aero-learning-head{display:flex;align-items:start;margin-bottom:18px}.aero-learning-head h2{margin:0;font-size:19px}.aero-learning-head p{margin:4px 0 0;color:var(--aero-muted);font-size:11px}.aero-learning-close{margin-left:auto;border:1px solid var(--aero-line);background:var(--aero-panel);color:#b6c1d2;border-radius:8px;padding:6px 10px;cursor:pointer}.aero-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px;margin-bottom:14px}.aero-stat{border:1px solid var(--aero-line);background:var(--aero-panel);border-radius:11px;padding:14px}.aero-stat small{color:var(--aero-muted)}.aero-stat b{display:block;font-size:22px;margin-top:4px}.aero-table-wrap{border:1px solid var(--aero-line);background:var(--aero-panel);border-radius:11px;padding:13px;overflow:auto}.aero-table{width:100%;border-collapse:collapse;font-size:10px}.aero-table th,.aero-table td{text-align:left;padding:10px;border-bottom:1px solid var(--aero-line)}.aero-table th{color:var(--aero-muted);font-weight:500}.aero-ok{color:var(--aero-green)}.aero-error-text{color:var(--aero-red)}
 @media(max-width:1100px){.aero-card{flex-basis:140px}}
 `;
@@ -102,6 +118,7 @@ let panel = null;
 let dockBuilding = false;
 let followController = null;
 let learning = null;
+let learningGeneration = 0;
 
 function composerInput() {
   return document.querySelector("[data-composer-input='true'], textarea");
@@ -147,10 +164,15 @@ function navButton(action, icon, label) {
   return el("button", { type: "button", "data-aero-action": action,
     onclick: () => {
       if (action === "conversation") {
+        learningGeneration += 1;
         learning?.classList.remove("on");
         composerInput()?.focus();
       } else if (["evaluation", "rules", "data"].includes(action)) showLearning(action);
-      else setComposerText(selectedPrompt(action));
+      else {
+        learningGeneration += 1;
+        learning?.classList.remove("on");
+        setComposerText(selectedPrompt(action));
+      }
       closeModalNavigation();
     } }, el("span", null, icon), label);
 }
@@ -253,6 +275,16 @@ function caseQuotePayload(quote, caseId) {
     target: detail.target || pricing.target || null };
 }
 
+function cancelAllQuotes(caseId) {
+  document.querySelectorAll(".aero-quote").forEach((card) => {
+    if (card.dataset.caseId !== caseId) return;
+    card.dataset.state = "cancelled";
+    card.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+    const state = card.querySelector(".aero-quote-state");
+    if (state) state.textContent = "已取消";
+  });
+}
+
 function disableSiblingQuotes(caseId, selectedQuoteId) {
   document.querySelectorAll(".aero-quote").forEach((card) => {
     if (card.dataset.caseId !== caseId || card.dataset.quoteId === selectedQuoteId) return;
@@ -299,7 +331,8 @@ function quoteCard(payload, host) {
     message.className = `aero-message${state === "completed" ? " ok" : ["failed", "unknown"].includes(state) ? " error" : ""}`;
     message.textContent = text;
     message.style.display = text ? "block" : "none";
-    if (["completed", "cancelled", "requote"].includes(state)) disableSiblingQuotes(payload.case_id, payload.quote_id);
+    if (["completed", "requote"].includes(state)) disableSiblingQuotes(payload.case_id, payload.quote_id);
+    if (state === "cancelled") cancelAllQuotes(payload.case_id);
   }
 
   function renderReplacement(record) {
@@ -312,13 +345,13 @@ function quoteCard(payload, host) {
 
   confirm.addEventListener("click", async () => {
     setState("confirming", "正在复核价格并提交办理…");
+    disableSiblingQuotes(payload.case_id, payload.quote_id);
     try {
       const keys = requestKeys(payload.quote_id);
       const result = await api(`/api/v1/quotes/${payload.quote_id}/confirm`, TOKEN, { method: "POST",
         body: JSON.stringify({ confirmation_id: keys.confirmationId, idempotency_key: keys.idempotencyKey }) });
       const next = quoteStateAfter("confirming", result);
       setState(next, `Quote API 已受理，operation ${result.operation_id || "创建中"}；等待 TransactionAgent 返回最终状态。`);
-      disableSiblingQuotes(payload.case_id, payload.quote_id);
       await refreshPanel(payload.case_id);
       const followed = await followCase(payload.case_id);
       const record = followed || await refreshPanel(payload.case_id);
@@ -446,8 +479,8 @@ function renderInspector() {
       Object.keys(view.memory).length ? Object.entries(view.memory).map(([key, value]) => kv(key, value)) :
         el("div", { class: "aero-empty" }, "暂无记忆快照")));
   } else {
-    const passed = view.verify.passed;
-    body.append(el("div", { class: "aero-verify" }, passed === false ? "未通过本轮校验" : "✓ 本轮结果校验通过"),
+    const verification = verificationView(view.verify);
+    body.append(el("div", { class: `aero-verify ${verification.kind}` }, verification.label),
       el("div", { class: "aero-metrics" },
         el("div", null, el("small", null, "答案置信度"), el("b", null, view.verify.confidence ?? "—")),
         el("div", null, el("small", null, "规则支持度"), el("b", null, view.verify.support_ratio ?? "—")),
@@ -553,20 +586,37 @@ async function followCase(caseId) {
           if (!dataLines.length) continue;
           let data = {};
           try { data = JSON.parse(dataLines.join("\n")); } catch { data = { message: dataLines.join("\n") }; }
-          if (type === "case.trace" && activeCase) {
+          if (type === "case.trace" && activeCase?.case_id === caseId) {
             activeCase.result = activeCase.result || {};
-            activeCase.result.trace = [...(activeCase.result.trace || []), data];
-            if (activeTab === "flow") renderInspector();
+            const traces = activeCase.result.trace || [];
+            const eventKey = traceEventKey(data);
+            if (!traces.some((event) => traceEventKey(event) === eventKey)) {
+              activeCase.result.trace = [...traces, data];
+              if (activeTab === "flow") renderInspector();
+            }
           }
           if (terminalEvent(type)) {
             const record = await refreshPanel(caseId);
-            if (type === "fulfillment.completed") await refreshDock();
-            if (record && shouldStopFollowing(record)) return record;
+            if (record) {
+              const action = followAction(type, record);
+              if (action === "requote") return record;
+              if (action === "stop") {
+                if (record.status === "COMPLETED") await refreshDock();
+                return record;
+              }
+            }
           }
         }
       }
       const record = await refreshPanel(caseId);
-      if (record && shouldStopFollowing(record)) return record;
+      if (record) {
+        const action = followAction("snapshot", record);
+        if (action === "requote") return record;
+        if (action === "stop") {
+          if (record.status === "COMPLETED") await refreshDock();
+          return record;
+        }
+      }
     } catch (error) {
       if (controller.signal.aborted) return;
       const body = inspectorBody();
@@ -579,7 +629,10 @@ async function followCase(caseId) {
 function learningLayout(title, subtitle) {
   learning.replaceChildren(el("div", { class: "aero-learning-head" }, el("div", null,
     el("h2", null, title), el("p", null, subtitle)),
-    el("button", { class: "aero-learning-close", onclick: () => learning.classList.remove("on") }, "返回对话")));
+    el("button", { class: "aero-learning-close", onclick: () => {
+      learningGeneration += 1;
+      learning.classList.remove("on");
+    } }, "返回对话")));
 }
 
 function learningTable(headers, rows) {
@@ -590,6 +643,7 @@ function learningTable(headers, rows) {
 
 async function showLearning(kind) {
   if (!learning) return;
+  const generation = ++learningGeneration;
   const sidebar = document.querySelector("nav.hHd-Xa_panelList")?.parentElement;
   learning.style.left = `${sidebar?.getBoundingClientRect().right || 250}px`;
   learning.classList.add("on");
@@ -598,6 +652,7 @@ async function showLearning(kind) {
       learningLayout("评测中心", "观察回答正确性、工具调用准确率与真实回归结果");
       learning.append(el("div", { class: "aero-note" }, "正在读取评测运行…"));
       const data = await api("/api/v1/admin/evaluations?view=runs", ADMIN_TOKEN);
+      if (generation !== learningGeneration) return;
       const runs = data.runs || [];
       const latest = runs[0];
       learning.querySelector(".aero-note")?.remove();
@@ -611,6 +666,7 @@ async function showLearning(kind) {
     } else if (kind === "rules") {
       learningLayout("票规检索与维护", "查看当前生效的退改规则与检索依据");
       const data = await api("/api/v1/admin/rules", ADMIN_TOKEN);
+      if (generation !== learningGeneration) return;
       const rules = data.rules || [];
       learning.append(el("div", { class: "aero-stats" },
         el("div", { class: "aero-stat" }, el("small", null, "规则数量"), el("b", null, rules.length)),
@@ -621,6 +677,7 @@ async function showLearning(kind) {
     } else {
       learningLayout("演示数据", "查看订单、航班状态和退改场景；业务数据只来自 AeroAgent 后端");
       const data = await api("/api/v1/orders");
+      if (generation !== learningGeneration) return;
       const orders = data.orders || [];
       learning.append(el("div", { class: "aero-stats" },
         el("div", { class: "aero-stat" }, el("small", null, "演示订单"), el("b", null, orders.length)),
@@ -632,7 +689,9 @@ async function showLearning(kind) {
         [order.order_id, order.flight_no, orderView(order).route, order.flight?.status || "—", order.status])));
     }
   } catch (error) {
-    learning.append(el("div", { class: "aero-error-text" }, `数据加载失败：${error.message}`));
+    if (generation === learningGeneration) {
+      learning.append(el("div", { class: "aero-error-text" }, `数据加载失败：${error.message}`));
+    }
   }
 }
 
@@ -665,7 +724,8 @@ const inject = [];
 function apply() { /* 客户端以 DOM 注入方式工作，无需服务端注册 */ }
 
 globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
-  { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing, quoteStateAfter });
+  { parseAeroAgentQuote, parseAeroAgentCase, orderView, requestKeys, caseView, shouldStopFollowing,
+    quoteStateAfter, followAction, traceEventKey, verificationView });
 if (typeof window !== "undefined" && window.__ModuleLoader__ && !globalThis.__AERO_DSH_MODULE_REGISTERED) {
   window.__ModuleLoader__.load({ id: "dsh-plugin-aeroagent", factory: () => ({ inject, apply }) });
   globalThis.__AERO_DSH_MODULE_REGISTERED = true;

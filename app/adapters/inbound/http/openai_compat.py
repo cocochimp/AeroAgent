@@ -37,12 +37,16 @@ def _tool_names(request: CompatRequest) -> set[str]:
     return {((t.get("function") or {}).get("name") or "") for t in request.tools}
 
 
+def _is_host_metadata(content: str) -> bool:
+    """识别 DSH 注入到 user 角色中的非业务上下文。"""
+    return content.strip().startswith(("Time sampled while preparing turn", "<system-reminder>",
+                                      "Current runtime context."))
+
+
 def _last_user(request: CompatRequest) -> str:
     for message in reversed(request.messages):
         if message.role == "user" and message.content:
-            # DSH 会把采样时间与系统提醒作为合成 user 消息追加到业务诉求之后。
-            if message.content.strip().startswith(("Time sampled while preparing turn", "<system-reminder>",
-                                                   "Current runtime context.")):
+            if _is_host_metadata(message.content):
                 continue
             return message.content
     return ""
@@ -50,6 +54,11 @@ def _last_user(request: CompatRequest) -> str:
 
 def _last_tool_content(request: CompatRequest) -> str | None:
     for message in reversed(request.messages):
+        # 新的真实用户诉求表示历史工具轮已结束，不能重复汇总旧工具结果。
+        if message.role == "user" and message.content:
+            if _is_host_metadata(message.content):
+                continue
+            return None
         if message.role == "tool" and message.content:
             return message.content
     return None
@@ -115,9 +124,12 @@ async def _run_servicing_case(message: str, case_id: str | None = None) -> dict:
             candidate = await session.get(ServiceCaseRecord, case_id)
             if candidate and candidate.user_id == "u_zhang":
                 case = candidate
+        if case and case.status == "RESULT_UNKNOWN":
+            return {"case_id": case.case_id, "status": "RESULT_UNKNOWN",
+                    "final": "上一笔办理结果仍待核对，请先核对航司与订单状态；在结果明确前不会创建新案件或新报价。"}
         # 显式切换到另一订单或已结束旧案件时，开始独立的新案件。
         if case and ((explicit_order_id and case.order_id and explicit_order_id != case.order_id) or
-                     case.status in {"COMPLETED", "CANCELLED", "HUMAN_REVIEW", "RESULT_UNKNOWN"}):
+                     case.status in {"COMPLETED", "CANCELLED", "HUMAN_REVIEW"}):
             case = None
             case_id = None
 
@@ -174,7 +186,8 @@ def _render_case_result(result: dict) -> str:
         parts.append(f"待乘客补充：{question}")
     else:
         final = result.get("final") or "（本轮没有产生答复）"
-        parts.append(final.get("text") if isinstance(final, dict) else str(final))
+        parts.append((final.get("text") or json.dumps(final, ensure_ascii=False))
+                     if isinstance(final, dict) else str(final))
     if result.get("case_id"):
         parts.append(_case_fence(result["case_id"]))
     return "\n".join(parts)

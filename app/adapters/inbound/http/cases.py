@@ -134,13 +134,20 @@ async def add_case_message(case_id: str, request: CaseMessageRequest,
                 current_case = await session.get(ServiceCaseRecord, case_id, with_for_update=True)
                 if quote is None or quote.status not in {"OFFERED", "REQUOTE_REQUIRED"}:
                     raise _http_error("CANCELLATION_REJECTED", "该报价已进入办理流程，无法取消", 409)
-                quote.status = "CANCELLED"
+                offered = list(await session.scalars(select(QuoteRecord).where(
+                    QuoteRecord.case_id == case_id,
+                    QuoteRecord.status.in_(["OFFERED", "REQUOTE_REQUIRED"]))))
+                for offered_quote in offered:
+                    offered_quote.status = "CANCELLED"
                 if current_case:
                     current_case.status = "CANCELLED"
                     current_case.updated_at = utcnow()
                 await session.commit()
-            await record_case_event(case_id, "case.cancelled", {"quote_id": case.current_quote_id})
-            return {"case_id": case_id, "status": "CANCELLED", "quote_id": case.current_quote_id}
+            quote_ids = [item.quote_id for item in offered]
+            await record_case_event(case_id, "case.cancelled", {"quote_id": case.current_quote_id,
+                                                                 "quote_ids": quote_ids})
+            return {"case_id": case_id, "status": "CANCELLED", "quote_id": case.current_quote_id,
+                    "quote_ids": quote_ids}
         raise _http_error("CONFIRMATION_REQUIRED", "请使用报价确认接口办理已报价方案", 409)
     payload = {"case_id": case.case_id, "session_id": case.session_id,
                "user_id": principal.user_id, "message": request.message, "order_id": case.order_id}

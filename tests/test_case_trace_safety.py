@@ -42,18 +42,22 @@ def test_agent_trace_callback_persists_safe_case_trace_event(monkeypatch):
                                                          "input": {"order_id": "O1"}})]
 
 
-def test_quote_can_be_cancelled_through_existing_case_message_command(monkeypatch):
+def test_case_cancellation_cancels_every_offered_quote(monkeypatch):
     import asyncio
     from types import SimpleNamespace
     import app.adapters.inbound.http.cases as api
     from app.adapters.inbound.http.auth import Principal
     case = SimpleNamespace(case_id="case-1", user_id="u1", session_id="s1", order_id="O1", current_quote_id="q1")
-    quote = SimpleNamespace(status="OFFERED")
+    first = SimpleNamespace(quote_id="q1", status="OFFERED")
+    second = SimpleNamespace(quote_id="q2", status="OFFERED")
     current_case = SimpleNamespace(status="WAITING_CONFIRMATION", updated_at=None)
     class Session:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return None
-        async def get(self, model, key, **kwargs): return quote if model.__name__ == "QuoteRecord" else current_case
+        async def get(self, model, key, **kwargs):
+            if model.__name__ == "QuoteRecord": return first if key == "q1" else second
+            return current_case
+        async def scalars(self, _): return [first, second]
         async def commit(self): pass
     events = []
     monkeypatch.setattr(api, "_owned_case", lambda *_: asyncio.sleep(0, result=case))
@@ -67,8 +71,9 @@ def test_quote_can_be_cancelled_through_existing_case_message_command(monkeypatc
                                           Principal("u1", frozenset({"user"})))
     result = asyncio.run(call())
     assert result["status"] == "CANCELLED"
-    assert quote.status == current_case.status == "CANCELLED"
-    assert events[0][1:] == ("case.cancelled", {"quote_id": "q1"})
+    assert result["quote_ids"] == ["q1", "q2"]
+    assert first.status == second.status == current_case.status == "CANCELLED"
+    assert events[0][1:] == ("case.cancelled", {"quote_id": "q1", "quote_ids": ["q1", "q2"]})
 
 
 def test_event_reconnect_delivers_after_cursor_once(monkeypatch):
