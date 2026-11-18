@@ -58,38 +58,97 @@ def _parse_order_id(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-async def _run_servicing_case(message: str) -> dict:
-    """在兼容端点内驱动完整案件管线；返回可渲染的结果描述。"""
+_CASE_FENCE = re.compile(r"```aeroagent-case\s*(\{[\s\S]*?\})\s*```")
+
+
+def _latest_case_id(request: CompatRequest) -> str | None:
+    """从宿主回传的最近 assistant 元数据中恢复案件，不依赖宿主私有会话字段。"""
+    for message in reversed(request.messages):
+        if message.role != "assistant" or not message.content:
+            continue
+        match = _CASE_FENCE.search(message.content)
+        if not match:
+            continue
+        try:
+            case_id = json.loads(match.group(1)).get("case_id")
+        except json.JSONDecodeError:
+            continue
+        if isinstance(case_id, str) and case_id.startswith("case_"):
+            return case_id
+    return None
+
+
+def _case_fence(case_id: str) -> str:
+    """生成客户端隐藏、宿主下一轮原样回传的案件标记。"""
+    return f"```aeroagent-case\n{json.dumps({'case_id': case_id})}\n```"
+
+
+def _quote_payload(quote, case_id: str) -> dict:
+    """把报价记录转换为浏览器确认卡所需的稳定字段。"""
+    detail = (quote.details or [{}])[0]
+    pricing = detail.get("pricing") or {}
+    return {"quote_id": quote.quote_id, "case_id": case_id, "order_id": quote.order_id,
+            "action": quote.action, "amount": quote.amount, "currency": quote.currency,
+            "expires_at": quote.expires_at.isoformat() if quote.expires_at else None,
+            "fee_items": detail.get("fee_items", []), "rule_refs": detail.get("rule_refs", []),
+            "target": detail.get("target") or pricing.get("target")}
+
+
+async def _run_servicing_case(message: str, case_id: str | None = None) -> dict:
+    """创建或恢复真实案件；追问沿用会话，待确认报价只能由确认卡继续。"""
     from sqlalchemy import select
 
     from app.adapters.outbound.postgres.database import SessionFactory
     from app.adapters.outbound.postgres.models import QuoteRecord, ServiceCaseRecord
     from app.application.cases.service import run_case_turn, utcnow
 
-    case_id = f"case_{uuid.uuid4().hex}"
-    session_id = f"compat_{uuid.uuid4().hex}"
-    order_id = _parse_order_id(message)
+    explicit_order_id = _parse_order_id(message)
     clean = _ORDER_TOKEN.sub("", message).strip() or message
-    now = utcnow()
-    async with SessionFactory() as session:
-        session.add(ServiceCaseRecord(case_id=case_id, user_id="u_zhang", order_id=order_id,
-                                      status="OPEN", intent=None, session_id=session_id,
-                                      created_at=now, updated_at=now,
-                                      current_quote_id=None, result={}))
-        await session.commit()
-    await run_case_turn({"case_id": case_id, "session_id": session_id, "user_id": "u_zhang",
-                         "message": clean, "order_id": order_id})
+    case = None
+    if case_id:
+        async with SessionFactory() as session:
+            candidate = await session.get(ServiceCaseRecord, case_id)
+            if candidate and candidate.user_id == "u_zhang":
+                case = candidate
+        # 显式切换到另一订单或已结束旧案件时，开始独立的新案件。
+        if case and ((explicit_order_id and case.order_id and explicit_order_id != case.order_id) or
+                     case.status in {"COMPLETED", "CANCELLED", "HUMAN_REVIEW", "RESULT_UNKNOWN"}):
+            case = None
+            case_id = None
+
+    pending = orchestrator.pending_interrupt(case.session_id) if case else None
+    if case is None:
+        case_id = f"case_{uuid.uuid4().hex}"
+        session_id = f"compat_{uuid.uuid4().hex}"
+        order_id = explicit_order_id
+        now = utcnow()
+        async with SessionFactory() as session:
+            session.add(ServiceCaseRecord(case_id=case_id, user_id="u_zhang", order_id=order_id,
+                                          status="OPEN", intent=None, session_id=session_id,
+                                          created_at=now, updated_at=now,
+                                          current_quote_id=None, result={}))
+            await session.commit()
+    else:
+        session_id = case.session_id
+        order_id = explicit_order_id or case.order_id
+
+    if not (pending and pending.get("kind") == "confirm"):
+        payload = {"case_id": case_id, "session_id": session_id, "user_id": "u_zhang",
+                   "message": clean, "order_id": order_id}
+        if pending:
+            payload["resume_payload"] = {"value": clean}
+        await run_case_turn(payload)
+
     async with SessionFactory() as session:
         case = await session.get(ServiceCaseRecord, case_id)
-        quotes = list(await session.scalars(select(QuoteRecord).where(QuoteRecord.case_id == case_id)))
+        quotes = list(await session.scalars(select(QuoteRecord).where(QuoteRecord.case_id == case_id)
+                                            .order_by(QuoteRecord.created_at)))
     out = {"case_id": case_id, "status": case.status if case else "UNKNOWN"}
-    quote = next((q for q in quotes if q.quote_id == (case.current_quote_id if case else None)), None)
-    if case and case.status == "WAITING_CONFIRMATION" and quote:
-        detail = (quote.details or [{}])[0]
-        out["quote"] = {"quote_id": quote.quote_id, "case_id": case_id, "action": quote.action,
-                        "amount": quote.amount,
-                        "fee_items": detail.get("fee_items", []), "rule_refs": detail.get("rule_refs", []),
-                        "order_id": quote.order_id}
+    offered = [quote for quote in quotes if quote.status == "OFFERED"]
+    if offered:
+        out["quotes"] = [_quote_payload(quote, case_id) for quote in offered]
+    if pending and pending.get("kind") == "confirm":
+        out["final"] = "当前方案仍在等待确认，请使用报价卡选择确认办理或暂不办理。"
     elif case and case.result and case.result.get("interrupt"):
         out["clarify"] = case.result["interrupt"]
     elif case and case.result:
@@ -98,14 +157,22 @@ async def _run_servicing_case(message: str) -> dict:
 
 
 def _render_case_result(result: dict) -> str:
-    """把案件结果渲染为宿主可读文本；报价用 fenced 标记供客户端插件渲染确认卡。"""
-    if "quote" in result:
-        fence = json.dumps(result["quote"], ensure_ascii=False)
-        return (f"已生成可办理方案，请在下方确认卡操作。\n```aeroagent-quote\n{fence}\n```")
-    if "clarify" in result:
+    """渲染人类可读答复、结构化报价和用于多轮恢复的案件元数据。"""
+    parts = []
+    quotes = result.get("quotes") or ([result["quote"]] if result.get("quote") else [])
+    if quotes:
+        parts.append("已生成可办理方案，请在下方确认卡操作。")
+        parts.extend(f"```aeroagent-quote\n{json.dumps(quote, ensure_ascii=False)}\n```"
+                     for quote in quotes)
+    elif "clarify" in result:
         question = result["clarify"].get("question") or json.dumps(result["clarify"], ensure_ascii=False)
-        return f"待乘客补充：{question}"
-    return str(result.get("final") or "（本轮没有产生答复）")
+        parts.append(f"待乘客补充：{question}")
+    else:
+        final = result.get("final") or "（本轮没有产生答复）"
+        parts.append(final.get("text") if isinstance(final, dict) else str(final))
+    if result.get("case_id"):
+        parts.append(_case_fence(result["case_id"]))
+    return "\n".join(parts)
 
 
 async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] | None]:
@@ -113,13 +180,14 @@ async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] |
     tool_content = _last_tool_content(request)
     if tool_content is not None:
         return f"【AeroAgent】工具返回：{tool_content[:1500]}", None
+    case_id = _latest_case_id(request)
     names = _tool_names(request)
-    if "aeroagent_list_orders" in names and _ORDER_INTENT.search(_last_user(request)):
+    if not case_id and "aeroagent_list_orders" in names and _ORDER_INTENT.search(_last_user(request)):
         call = [{"index": 0, "id": f"call_{uuid.uuid4().hex}", "type": "function",
                  "function": {"name": "aeroagent_list_orders",
                               "arguments": json.dumps({"user_id": "u_zhang"})}}]
         return "", call
-    result = await _run_servicing_case(_last_user(request))
+    result = await _run_servicing_case(_last_user(request), case_id)
     return _render_case_result(result), None
 
 

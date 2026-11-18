@@ -1,9 +1,11 @@
+import asyncio
 import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.main import app
+from app.adapters.inbound.http import openai_compat
 
 
 @pytest.fixture()
@@ -69,3 +71,41 @@ def test_plain_question_runs_the_servicing_mainline(client):
     content = response.json()["choices"][0]["message"]["content"]
     assert content.strip()
     assert response.json()["usage"]["total_tokens"] > 0
+
+
+def test_case_metadata_round_trips_through_assistant_history(monkeypatch):
+    content = openai_compat._render_case_result({
+        "case_id": "case_abc",
+        "status": "NEEDS_INFORMATION",
+        "clarify": {"question": "想改到哪一天？"},
+    })
+    assert "```aeroagent-case" in content
+    assert '"case_id": "case_abc"' in content
+    request = openai_compat.CompatRequest(messages=[
+        {"role": "user", "content": "改签"},
+        {"role": "assistant", "content": content},
+        {"role": "user", "content": "后天"},
+    ])
+    calls = []
+
+    async def fake_run(message, case_id=None):
+        calls.append((message, case_id))
+        return {"case_id": case_id, "status": "NEEDS_INFORMATION",
+                "clarify": {"question": "请继续补充"}}
+
+    monkeypatch.setattr(openai_compat, "_run_servicing_case", fake_run)
+    asyncio.run(openai_compat._completion_content(request))
+    assert calls == [("后天", "case_abc")]
+
+
+def test_each_actionable_quote_has_its_own_fence():
+    quote = {"quote_id": "q_1", "case_id": "case_abc", "order_id": "ORD1",
+             "action": "REFUND", "amount": 400, "currency": "CNY",
+             "expires_at": "2026-11-18T12:00:00Z", "fee_items": [],
+             "rule_refs": ["R1"], "target": None}
+    content = openai_compat._render_case_result({
+        "case_id": "case_abc", "status": "WAITING_CONFIRMATION",
+        "quotes": [quote, {**quote, "quote_id": "q_2", "action": "CHANGE"}],
+    })
+    assert content.count("```aeroagent-quote") == 2
+    assert content.count("```aeroagent-case") == 1
