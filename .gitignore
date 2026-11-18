@@ -15,4 +15,5 @@ desktop/release/
 .ruff_cache/
 .mypy_cache/
 .archify/
+.superpowers/
 *.tsbuildinfo
