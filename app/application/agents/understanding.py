@@ -31,6 +31,46 @@ CABIN_LABEL = {"F": "头等舱", "C": "公务舱", "Y": "经济舱"}
 SCENARIO_KIND = {"CHANGE": "VOLUNTARY_CHANGE", "REFUND": "VOLUNTARY_REFUND"}
 KIND_LABEL = {"VOLUNTARY_CHANGE": "自愿改签", "VOLUNTARY_REFUND": "自愿退票", "CANCEL": "航班取消",
               "DELAY": "航班延误", "NO_SHOW": "误机", "FARE_DIFF": "改签差价"}
+_INTENT_ANSWER_ALIASES = {
+    "了解规则": "POLICY", "了解政策": "POLICY", "查询规则": "POLICY", "咨询规则": "POLICY",
+    "规则": "POLICY", "政策": "POLICY", "改签": "CHANGE", "退票": "REFUND", "航班状态": "STATUS",
+}
+_INTENT_ANSWER_PATTERNS = [
+    ("POLICY", r"^(?:了解|咨询|查询|查看)(?:规则|政策)(?=$|[。！!，,；;\s])"),
+    ("REFUND", r"^(?:(?:我想|我要)(?:办理)?|办理)?退票(?=$|[。！!，,；;\s])"),
+    ("CHANGE", r"^(?:(?:我想|我要)(?:办理)?|办理)?改签(?=$|[。！!，,；;\s])"),
+    ("STATUS", r"^(?:查询|了解|查看)航班状态(?=$|[。！!，,；;\s])"),
+]
+
+
+def normalize_intent_answer(value) -> str | None:
+    """把追问答案收敛到受支持意图；自然语言只接受明确前缀，歧义或任意对象一律返回 None。"""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    canonical = text.upper()
+    if canonical in INTENT_LABEL:
+        return canonical
+    simple = text.rstrip("。！!，,；; ")
+    for code, label in INTENT_LABEL.items():
+        if simple == label:
+            return code
+    if simple in _INTENT_ANSWER_ALIASES:
+        return _INTENT_ANSWER_ALIASES[simple]
+    return next((code for code, pattern in _INTENT_ANSWER_PATTERNS if re.search(pattern, text)), None)
+
+
+def _is_intent_selector(value: str) -> bool:
+    """区分单纯意图选项与含新业务上下文的自然语言答案，后者应成为后续检索文本。"""
+    text = value.strip()
+    simple = text.rstrip("。！!，,；; ")
+    return (text.upper() in INTENT_LABEL or simple in INTENT_LABEL.values()
+            or simple in _INTENT_ANSWER_ALIASES)
+
+
+def _intent_clarification() -> dict:
+    return {"field": "intent", "question": "您是想改签、退票，还是了解规则？",
+            "options": [{"label": label, "value": code} for code, label in INTENT_LABEL.items()]}
 
 
 def today() -> date:
@@ -240,6 +280,10 @@ def date_options(n=5):
 
 def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
     """拆解复合诉求并对齐订单、日期和异常场景；信息不足时生成追问而不是猜测办理条件。"""
+    forced_intent_raw = ctx.get("forced_intent")
+    forced_intent = normalize_intent_answer(forced_intent_raw)
+    if forced_intent_raw is not None and forced_intent is None:
+        return ParsedQuery(confidence=0.0, clarify=_intent_clarification(), rewritten="无法确定诉求")
     segments = [s for s in re.split(SPLIT, question) if s.strip()] or [question]
     subs, guessed = [], False
     strict_status = any(i in ("CHANGE", "REFUND") for i in detect_intents(question))   # 整句判断，分句不能各自放行
@@ -261,12 +305,17 @@ def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
                     normalized = normalize_provider_date(sub.target_date)
                     provider_date_rejected = provider_date_rejected or normalized is None
                     sub.target_date = normalized
-    if not subs:
+    if forced_intent:
+        forced_text = str(forced_intent_raw).strip()
+        text = question if _is_intent_selector(forced_text) else forced_text
+        subs = [SubQuery(intent=forced_intent, text=text,
+                         target_date=find_date(text) if forced_intent == "CHANGE" else None)]
+    elif not subs:
         # 只有省略式追问（「那大后天呢」「那退票呢」这类短句）才继承上一轮意图；无关问题不继承
         ellipsis = bool(re.match(r"^\s*(那|那么|还有|再|如果)", question)) or bool(re.search(r"呢[？?]?\s*$", question))
-        inherited = ctx.get("last_intent") if ellipsis else None
-        intent = ctx.get("forced_intent") or inherited or "POLICY"
-        guessed = not (ctx.get("forced_intent") or inherited)
+        inherited = normalize_intent_answer(ctx.get("last_intent")) if ellipsis else None
+        intent = inherited or "POLICY"
+        guessed = not inherited
         subs = [SubQuery(intent=intent, text=question, target_date=find_date(question) if intent == "CHANGE" else None)]
     has_forced_date = bool(forced_raw and str(forced_raw).strip())
     forced_date = None
@@ -322,8 +371,7 @@ def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
     elif "target_date" in p.missing:
         p.clarify = {"field": "target_date", "question": "想改签到哪一天？", "options": date_options()}
     elif p.confidence < S.get()["query"]["clarify_threshold"]:
-        p.clarify = {"field": "intent", "question": "您是想改签、退票，还是了解规则？",
-                     "options": [{"label": v, "value": k} for k, v in INTENT_LABEL.items()]}
+        p.clarify = _intent_clarification()
 
     desc = f"订单{p.order_id}（{order_label(data.get_order(p.order_id))}）" if p.order_id else "未指定订单"
     asks = "；".join(INTENT_LABEL[s.intent] + (f"至{s.target_date}" if s.target_date else "") for s in p.sub_queries)

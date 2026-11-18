@@ -1,5 +1,11 @@
+from datetime import datetime, timezone
+
+import pytest
+
+from app import config as S
 from app.adapters.outbound.sqlite import data
 from app.application.agents import understanding as query
+from app.application.agents.models import SubQuery
 
 D = "20260926"
 
@@ -146,6 +152,36 @@ def test_clarified_values_override():
     assert p.sub_queries[0].intent == "REFUND" and p.clarify is None
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ("POLICY", "POLICY"),
+    (" policy ", "POLICY"),
+    ("政策咨询", "POLICY"),
+    ("了解规则。请只说明当前客票的退票规则，不要生成报价，也不要办理。", "POLICY"),
+    ("我想退票。", "REFUND"),
+    ("我要改签。", "CHANGE"),
+    ("查询航班状态。", "STATUS"),
+    ("随便吧，你看着办。", None),
+    ("退票和改签", None),
+    ({"intent": "POLICY"}, None),
+])
+def test_normalize_intent_answer(raw, expected):
+    assert query.normalize_intent_answer(raw) == expected
+
+
+def test_valid_forced_intent_overrides_provider_subqueries():
+    answer = "了解规则。请只说明当前客票的退票规则，不要生成报价，也不要办理。"
+
+    class LLM:
+        def parse_intents(self, *args):
+            return [SubQuery(intent="REFUND", text="我要退票")]
+
+    p = query.understand("我要退票", ctx(
+        selected_order_id=f"ORD{D}001", forced_intent=answer), llm=LLM())
+
+    assert p.intents == ["POLICY"]
+    assert p.sub_queries[0].text == answer
+
+
 def test_step_back_and_hyde_text():
     p = query.understand("改到大后天", ctx(selected_order_id=f"ORD{D}001"))
     assert query.step_back_query(p, p.sub_queries[0]) == "经济舱自愿改签规则"
@@ -153,11 +189,6 @@ def test_step_back_and_hyde_text():
 
 
 # ---------- review fixes ----------
-from datetime import datetime, timezone
-import pytest
-from app import config as S
-
-
 @pytest.mark.parametrize("text,expected", [
     ("31号", "2026-10-31"),          # 9 月只有 30 天，顺延到 10-31
     ("2月30日", None), ("13月1号", None), ("0号", None), ("32号", None),

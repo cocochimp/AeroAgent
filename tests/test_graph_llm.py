@@ -34,6 +34,16 @@ class NoPaidLLM(llm.FakeLLM):
         return act("finish")
 
 
+class EmptyIntentLLM(llm.FakeLLM):
+    def __init__(self):
+        super().__init__(react=[act("tool_rule_retrieve", {"query": "退票规则"}), act("finish")])
+        self.parse_questions = []
+
+    def parse_intents(self, question, *args):
+        self.parse_questions.append(question)
+        return []
+
+
 class InventedDateLLM(NoPaidLLM):
     def __init__(self, target_date):
         super().__init__()
@@ -141,3 +151,34 @@ def test_provider_invented_rejected_date_clarifies_before_react_or_tools(monkeyp
     assert fake.calls == ["parse_intents"]
     assert tool_calls == []
     assert not [e for e in res["trace"] if e["node"] in {"agent_node", "tool_exec"}]
+
+
+def test_natural_language_intent_clarification_resume_reaches_planning():
+    greeting = "你好，请用一句中文介绍你自己。只介绍，不要办理任何业务。"
+    answer = "了解规则。请只说明当前客票的退票规则，不要生成报价，也不要办理。"
+    fake = EmptyIntentLLM()
+    initial = graph.run_turn("natural-intent-resume", "u_zhang", greeting,
+                             mode="deepseek", client=fake)
+    assert initial["interrupt"]["field"] == "intent"
+
+    resumed = graph.resume("natural-intent-resume", {"value": answer})
+
+    assert fake.parse_questions == [greeting, greeting]
+    assert resumed["parsed"]["intents"] == ["POLICY"]
+    assert resumed["parsed"]["sub_queries"][0]["text"] == answer
+    assert resumed["parsed"]["clarify"] is None
+    assert any(e["node"] == "agent_node" for e in resumed["trace"])
+
+
+def test_ambiguous_natural_language_intent_clarification_asks_again():
+    fake = EmptyIntentLLM()
+    initial = graph.run_turn("ambiguous-intent-resume", "u_zhang", "你好，只介绍你自己。",
+                             mode="deepseek", client=fake)
+    assert initial["interrupt"]["field"] == "intent"
+
+    resumed = graph.resume("ambiguous-intent-resume", {"value": "随便吧，你看着办。"})
+
+    assert resumed["interrupt"]["kind"] == "clarify"
+    assert resumed["interrupt"]["field"] == "intent"
+    assert resumed["parsed"]["intents"] == []
+    assert not [e for e in resumed["trace"] if e["node"] == "agent_node"]
