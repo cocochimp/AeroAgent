@@ -26,6 +26,11 @@ def test_dotted_date_uses_next_future_occurrence():
     assert query.find_date("改到11.23") == "2026-11-23"
 
 
+def test_leap_day_search_crosses_non_leap_century():
+    S.set_now(datetime(2096, 3, 1, 10, 0))
+    assert query.resolve_date("2.29") == "2104-02-29"
+
+
 def test_dotted_date_rolls_into_next_year():
     S.set_now(datetime(2026, 12, 30, 10, 0))
     assert query.resolve_date("1.2") == "2027-01-02"
@@ -50,6 +55,27 @@ def test_today_is_not_a_target_and_month_day_uses_next_occurrence():
     assert query.resolve_date("2026-09-25") is None
     assert query.resolve_date("9月26日") == "2027-09-26"
     assert query.resolve_date("9.25") == "2027-09-25"
+
+
+def test_rejected_past_iso_is_not_reinserted_by_find_date():
+    assert query.find_date("改到2026-09-26") is None
+    assert query.find_date("改到2026-09-25") is None
+
+
+def test_rejected_forced_iso_clarifies_without_calling_llm():
+    calls = []
+
+    class LLM:
+        def parse_intents(self, *args):
+            calls.append(args)
+            return None
+
+    p = query.understand("改到下个月初", ctx(
+        selected_order_id=f"ORD{D}001", forced_date="2026-09-26"), llm=LLM())
+
+    assert calls == []
+    assert p.sub_queries[0].target_date is None
+    assert p.clarify["field"] == "target_date"
 
 
 def test_weekday_clarification_is_normalized_before_tool_schema():

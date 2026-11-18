@@ -19,6 +19,20 @@ def act(tool, args=None, thought="..."):
     return {"thought": thought, "action": tool, "args": args or {}}
 
 
+class NoPaidLLM(llm.FakeLLM):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def parse_intents(self, *args):
+        self.calls.append("parse_intents")
+        return None
+
+    def react(self, *args, **kwargs):
+        self.calls.append("react")
+        return act("finish")
+
+
 def test_schema_error_feedback_then_success():
     fake = llm.FakeLLM(react=[
         act("tool_rule_retrieve", {"query": "折扣票改签", "airline": "MU", "fare_product": "Y_DISCOUNT"}),
@@ -65,3 +79,28 @@ def test_round_limit_goes_human():
     fake = llm.FakeLLM(react=[act("tool_flight_status", {"flight_no": "MU5101", "date": "2026-09-28"})] * 10)
     res = graph.run_turn("l5", "u_zhang", "改到后天", order_id=O1, mode="deepseek", client=fake)
     assert res["outcome"] == "HUMAN"
+
+
+def test_past_iso_clarifies_before_paid_model_or_tool_calls():
+    no_paid = NoPaidLLM()
+
+    res = graph.run_turn("past-iso", "u_zhang", "改到2026-09-26",
+                         order_id=O1, mode="deepseek", client=no_paid)
+
+    assert res["interrupt"]["kind"] == "clarify"
+    assert res["interrupt"]["field"] == "target_date"
+    assert no_paid.calls == []
+    assert not [e for e in res["trace"] if e["node"] in {"agent_node", "tool_exec"}]
+
+
+def test_forced_past_iso_clarifies_before_paid_model_or_tool_calls_on_resume():
+    initial = graph.run_turn("forced-past-iso", "u_zhang", "改到下个月初", order_id=O1, mode="mock")
+    assert initial["interrupt"]["kind"] == "clarify"
+    no_paid = NoPaidLLM()
+
+    res = graph.resume("forced-past-iso", {"value": "2026-09-26"}, client=no_paid, strict=True)
+
+    assert res["interrupt"]["kind"] == "clarify"
+    assert res["interrupt"]["field"] == "target_date"
+    assert no_paid.calls == []
+    assert not [e for e in res["trace"] if e["node"] in {"agent_node", "tool_exec"}]

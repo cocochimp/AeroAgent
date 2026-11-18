@@ -212,6 +212,8 @@ async def _run_servicing_case(message: str, case_id: str | None = None, *, mode=
         if user_id and selected_order["user_id"] != user_id:
             raise HTTPException(404, detail={"code": "ORDER_NOT_FOUND", "message": "订单不存在或无权访问"})
         user_id = selected_order["user_id"]
+    if case_id and not user_id:
+        raise HTTPException(400, detail={"code": "USER_REQUIRED", "message": "继续案件前请提供用户身份或选择订单"})
     clean = _ORDER_TOKEN.sub("", message).strip() or message
     case = None
     if case_id:
@@ -308,9 +310,10 @@ async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] |
     case_id = case_metadata.get("case_id")
     user_id, selected_order_id = _request_identity(request)
     case_user_id = case_metadata.get("user_id")
-    if case_user_id and user_id and case_user_id != user_id:
+    if case_id and not user_id:
+        raise HTTPException(400, detail={"code": "USER_REQUIRED", "message": "继续案件前请提供用户身份或选择订单"})
+    if case_user_id and user_id != case_user_id:
         raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "案件不存在"})
-    user_id = user_id or case_user_id
     names = _tool_names(request)
     if (not case_id and "aeroagent_list_orders" in names and _ORDER_INTENT.search(_last_user(request))
             and not _SERVICING_INTENT.search(_last_user(request))):
@@ -327,7 +330,8 @@ async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] |
 
 def _throttle(raw_request: Request, request: CompatRequest) -> None:
     """按用户隔离一分钟滑动窗口；匿名流量仅按客户端地址共享限额。"""
-    user_id = _explicit_user_id(request) or _latest_case_metadata(request).get("user_id")
+    # 与业务处理使用同一身份解析；案件 fence 不是可认证的用户凭证。
+    user_id = None if _is_title_request(request) else _request_identity(request)[0]
     host = raw_request.client.host if raw_request.client else "unknown"
     key = f"user:{user_id}" if user_id else f"host:{host}"
     now = time.monotonic()

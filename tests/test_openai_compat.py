@@ -2,13 +2,14 @@ import asyncio
 import copy
 import json
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import config as S
 from app.api.main import app
-from app.application.agents.llm import LLMError
+from app.application.agents.llm import DeepSeekClient, LLMError
 from app.adapters.inbound.http import openai_compat
 
 
@@ -128,7 +129,7 @@ def test_case_metadata_round_trips_through_assistant_history(monkeypatch):
     })
     assert "```aeroagent-case" in content
     assert '"case_id": "case_abc"' in content
-    request = openai_compat.CompatRequest(messages=[
+    request = openai_compat.CompatRequest(metadata={"user_id": "u_zhang"}, messages=[
         {"role": "user", "content": "改签"},
         {"role": "assistant", "content": content},
         {"role": "user", "content": "后天"},
@@ -193,7 +194,8 @@ def test_result_unknown_continuation_requires_reconciliation_without_new_case(mo
     monkeypatch.setattr(database, "SessionFactory", Session)
     monkeypatch.setattr(case_service, "SessionFactory", Session)
     monkeypatch.setattr(case_service, "run_case_turn", fake_turn)
-    result = asyncio.run(openai_compat._run_servicing_case("继续办理", unknown.case_id))
+    result = asyncio.run(openai_compat._run_servicing_case(
+        "继续办理", unknown.case_id, user_id="u_zhang"))
     assert result["case_id"] == unknown.case_id
     assert result["status"] == "RESULT_UNKNOWN"
     assert "核对" in result["final"]
@@ -301,6 +303,26 @@ def test_strict_provider_error_is_visible_and_retryable(monkeypatch):
     assert "工具返回" not in response.text and "离线" not in response.text
 
 
+def test_malformed_provider_response_is_visible_retryable_error(monkeypatch):
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    client = DeepSeekClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[])), strict=True)
+
+    async def malformed_provider(*args, **kwargs):
+        return client.react([])
+
+    monkeypatch.setattr(openai_compat, "_run_servicing_case", malformed_provider)
+    payload = {"model": "aeroagent-deepseek", "metadata": {"user_id": "u_li"},
+               "messages": [{"role": "user", "content": "帮我退票"}]}
+    test_client = TestClient(app, raise_server_exceptions=False)
+    response = test_client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "LLM_RESPONSE_INVALID"
+    assert error["details"]["retryable"] is True
+
+
 def test_sanitized_dsh_title_payload_is_local_only(monkeypatch, client):
     calls = []
 
@@ -361,7 +383,7 @@ def test_case_metadata_carries_user_identity_across_turns(monkeypatch):
         return {"case_id": case_id, "user_id": kwargs["user_id"], "status": "PROPOSED", "final": "已继续"}
 
     monkeypatch.setattr(openai_compat, "_run_servicing_case", fake_run)
-    request = openai_compat.CompatRequest(messages=[
+    request = openai_compat.CompatRequest(metadata={"user_id": "u_li"}, messages=[
         {"role": "user", "content": "@ORD20260926004 帮我退票"},
         {"role": "assistant", "content": rendered},
         {"role": "user", "content": "继续"},
@@ -370,6 +392,43 @@ def test_case_metadata_carries_user_identity_across_turns(monkeypatch):
     asyncio.run(openai_compat._completion_content(request))
 
     assert calls[0]["user_id"] == "u_li"
+
+
+def test_anonymous_case_continuation_requires_identity_before_case_read(monkeypatch):
+    from types import SimpleNamespace
+    from app.adapters.outbound.postgres import database
+    from app.adapters.outbound.postgres.models import ServiceCaseRecord
+
+    owned = SimpleNamespace(case_id="case_li", user_id="u_li", order_id=None,
+                            session_id="compat_li", status="RESULT_UNKNOWN", result={})
+    reads = []
+
+    class Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return None
+        async def get(self, model, key):
+            reads.append(key)
+            return owned if model is ServiceCaseRecord else None
+
+    monkeypatch.setattr(database, "SessionFactory", Session)
+    rendered = openai_compat._render_case_result({
+        "case_id": "case_li", "user_id": "u_li", "status": "PROPOSED", "final": "继续"})
+    request = openai_compat.CompatRequest(messages=[
+        {"role": "assistant", "content": rendered},
+        {"role": "user", "content": "继续"},
+    ])
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(openai_compat._completion_content(request))
+    assert caught.value.status_code == 400
+    assert caught.value.detail["code"] == "USER_REQUIRED"
+    assert reads == []
+
+    with pytest.raises(HTTPException) as direct:
+        asyncio.run(openai_compat._run_servicing_case("继续", "case_li"))
+    assert direct.value.status_code == 400
+    assert direct.value.detail["code"] == "USER_REQUIRED"
+    assert reads == []
 
 
 def test_new_case_uses_selected_order_owner_and_requested_mode(monkeypatch):
@@ -460,3 +519,25 @@ def test_compat_requests_are_throttled_per_user(monkeypatch, client):
     assert second.status_code == 429
     assert second.json()["error"]["code"] == "RATE_LIMITED"
     assert other_user.status_code == 200
+
+
+def test_selected_order_only_traffic_is_throttled_by_order_owner(monkeypatch, client):
+    async def local_completion(request):
+        return "ok", None
+
+    monkeypatch.setattr(openai_compat, "_completion_content", local_completion)
+    S.update({"compat": {"requests_per_minute": 1}})
+    getattr(openai_compat, "_request_times", {}).clear()
+    payload = {"model": "aeroagent-mock", "messages": [{"role": "user", "content": "退票"}]}
+    li_order = {**payload, "metadata": {"selected_order_id": "ORD20260926004"}}
+    zhang_order = {**payload, "metadata": {"selected_order_id": "ORD20260926001"}}
+    try:
+        first = client.post("/v1/chat/completions", json=li_order)
+        second = client.post("/v1/chat/completions", json=li_order)
+        other_owner = client.post("/v1/chat/completions", json=zhang_order)
+    finally:
+        getattr(openai_compat, "_request_times", {}).clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert other_owner.status_code == 200

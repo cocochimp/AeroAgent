@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import threading
 from types import SimpleNamespace
 
 import httpx
@@ -52,6 +53,83 @@ def test_strict_deepseek_auxiliary_failures_are_not_swallowed(method, args):
 
     with pytest.raises(LLMError):
         getattr(client, method)(*args)
+
+
+@pytest.mark.parametrize("payload", [
+    [],
+    {"choices": [{"message": []}]},
+    {"choices": [{"message": {"content": "", "tool_calls": {}}}]},
+    {"choices": [{"message": {"tool_calls": [{"function": []}]}}]},
+])
+def test_malformed_provider_payloads_become_retryable_llm_errors(payload):
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    client = DeepSeekClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)), strict=True)
+
+    with pytest.raises(LLMError) as caught:
+        client.react([])
+
+    assert caught.value.code == "LLM_RESPONSE_INVALID"
+    assert caught.value.retryable is True
+
+
+def test_strict_summarize_rejects_missing_summary():
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    client = DeepSeekClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+        200, json={"choices": [{"message": {"content": "{}"}}]})), strict=True)
+
+    with pytest.raises(LLMError) as caught:
+        client.summarize([])
+
+    assert caught.value.code == "LLM_RESPONSE_INVALID"
+    assert caught.value.retryable is True
+
+
+def test_strict_decision_preserves_original_error_code_and_retryable_flag():
+    from app.adapters.outbound.llm.deepseek import DeepSeekDecisionEngine
+
+    original = LLMError("timeout text must not rewrite policy",
+                        code="LLM_RESPONSE_INVALID", retryable=False)
+
+    class Client:
+        usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+
+        def react(self, messages):
+            raise original
+
+    engine = DeepSeekDecisionEngine(Client(), strict=True)
+    with pytest.raises(LLMError) as caught:
+        engine.decide({}, [])
+
+    assert caught.value is original
+    assert caught.value.code == "LLM_RESPONSE_INVALID"
+    assert caught.value.retryable is False
+
+
+def test_http_error_status_controls_retryable_policy():
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+    client = DeepSeekClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(401)), strict=True)
+
+    with pytest.raises(LLMError) as caught:
+        client.chat([])
+
+    assert caught.value.code == "LLM_REQUEST_FAILED"
+    assert caught.value.retryable is False
+
+
+def test_timeout_has_stable_structured_error_code():
+    S.update({"llm": {"api_key": "sk-test-000000"}})
+
+    def timeout(request):
+        raise httpx.ReadTimeout("provider timeout", request=request)
+
+    client = DeepSeekClient(transport=httpx.MockTransport(timeout), strict=True)
+    with pytest.raises(LLMError) as caught:
+        client.chat([])
+
+    assert caught.value.code == "LLM_TIMEOUT"
+    assert caught.value.retryable is True
 
 
 def test_model_call_budget_is_enforced_and_reset_per_turn():
@@ -114,6 +192,77 @@ def test_run_turn_threads_mode_and_strict_policy_without_mutating_config(monkeyp
     graph.reset_graph()
 
 
+def test_concurrent_turn_cannot_replace_engine_strictness_or_budget(monkeypatch):
+    from app.adapters.outbound.llm.deepseek import DeepSeekDecisionEngine
+    from app.adapters.outbound.llm.mock import MockDecisionEngine
+    from app.application.agents import orchestrator as graph
+
+    deep = DeepSeekDecisionEngine(
+        SimpleNamespace(usage={"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}),
+        strict=True, max_calls_per_turn=2)
+    mock = MockDecisionEngine()
+    monkeypatch.setattr(graph.llm_mod, "get_client",
+                        lambda mode, strict=False: deep if mode == "deepseek" else mock)
+
+    gate = threading.Lock()
+    deep_started = threading.Event()
+    mock_lock_attempt = threading.Event()
+    release_deep = threading.Event()
+
+    class TrackingLock:
+        def __enter__(self):
+            if threading.current_thread().name == "mock-turn":
+                mock_lock_attempt.set()
+            gate.acquire()
+
+        def __exit__(self, *args):
+            gate.release()
+
+    monkeypatch.setattr(graph.memory, "session_lock", lambda session_id: TrackingLock())
+    observed = {}
+
+    def fake_drive(inp, session_id, on_event=None):
+        if inp["mode"] == "deepseek":
+            deep_started.set()
+            assert release_deep.wait(timeout=2)
+            engine = graph._clients[session_id]
+            if hasattr(engine, "_charge"):
+                engine._charge()
+            observed["deep"] = {"mode": engine.mode, "strict": getattr(engine, "strict", None),
+                                "calls": getattr(engine, "_turn_calls", None)}
+        else:
+            observed["mock"] = graph._clients[session_id].mode
+        return {}
+
+    monkeypatch.setattr(graph, "_drive", fake_drive)
+    graph.reset_graph()
+    errors = []
+
+    def invoke(mode, strict):
+        try:
+            graph.run_turn("shared-session", "u_li", "退票", mode=mode, strict=strict)
+        except Exception as exc:  # pragma: no cover - assertion below reports thread failures
+            errors.append(exc)
+
+    deep_thread = threading.Thread(target=invoke, args=("deepseek", True), name="deep-turn")
+    mock_thread = threading.Thread(target=invoke, args=("mock", False), name="mock-turn")
+    deep_thread.start()
+    assert deep_started.wait(timeout=2)
+    mock_thread.start()
+    try:
+        assert mock_lock_attempt.wait(timeout=2)
+    finally:
+        release_deep.set()
+    deep_thread.join(timeout=2)
+    mock_thread.join(timeout=2)
+
+    assert not deep_thread.is_alive() and not mock_thread.is_alive()
+    assert errors == []
+    assert observed["deep"] == {"mode": "deepseek", "strict": True, "calls": 1}
+    assert observed["mock"] == "mock"
+    graph.reset_graph()
+
+
 def test_resume_reuses_checkpoint_mode_after_restart(monkeypatch):
     from app.adapters.outbound.llm.mock import MockDecisionEngine
     from app.application.agents import orchestrator as graph
@@ -129,6 +278,41 @@ def test_resume_reuses_checkpoint_mode_after_restart(monkeypatch):
     graph.reset_graph()
 
     graph.resume("secure-resume", {"value": "星期四"}, mode="mock", strict=True)
+
+    assert calls == [("deepseek", True)]
+    graph.reset_graph()
+
+
+def test_run_turn_stores_effective_strict_policy_in_checkpoint_input(monkeypatch):
+    from app.adapters.outbound.llm.mock import MockDecisionEngine
+    from app.application.agents import orchestrator as graph
+
+    monkeypatch.setattr(graph.llm_mod, "get_client", lambda mode, strict=False: MockDecisionEngine())
+    monkeypatch.setattr(graph, "_drive",
+                        lambda inp, session_id, on_event=None: {"strict": inp.get("strict")})
+    graph.reset_graph()
+
+    result = graph.run_turn("strict-checkpoint", "u_li", "退票", mode="deepseek", strict=True)
+
+    assert result["strict"] is True
+    graph.reset_graph()
+
+
+def test_deepseek_checkpoint_stays_strict_when_resumed_as_aeroagent_mock(monkeypatch):
+    from app.adapters.outbound.llm.mock import MockDecisionEngine
+    from app.application.agents import orchestrator as graph
+
+    calls = []
+    monkeypatch.setattr(graph.llm_mod, "get_client",
+                        lambda mode, strict=False: calls.append((mode, strict)) or MockDecisionEngine())
+    monkeypatch.setattr(graph, "pending_interrupt", lambda session_id: None)
+    monkeypatch.setattr(graph, "_drive", lambda inp, session_id, on_event=None: {})
+    monkeypatch.setattr(graph, "get_graph", lambda: SimpleNamespace(
+        get_state=lambda cfg: SimpleNamespace(values={"mode": "deepseek", "strict": True})))
+    graph.reset_graph()
+
+    # 模拟重启后宿主以 aeroagent-mock 发起恢复；检查点策略必须优先于当前模型档。
+    graph.resume("strict-resume", {"value": "继续"}, mode="mock", strict=False)
 
     assert calls == [("deepseek", True)]
     graph.reset_graph()

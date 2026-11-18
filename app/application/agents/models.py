@@ -68,7 +68,8 @@ class AgentState(TypedDict, total=False):
     user_id: str
     order_id: str | None
     question: str
-    mode: str                     # offline | deepseek
+    mode: str                     # mock | offline | deepseek
+    strict: bool                  # 当前检查点的供应商错误策略；恢复时不得被请求模型档覆盖
     # 记忆与理解
     context: dict                 # memory_node 注入的上下文与 Token 预算
     parsed: dict                  # ParsedQuery

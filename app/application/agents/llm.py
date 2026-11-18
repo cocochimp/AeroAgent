@@ -24,6 +24,10 @@ class _Intents(BaseModel):
     sub_queries: list[SubQuery]
 
 
+def _invalid_response(detail: str) -> LLMError:
+    return LLMError(f"响应格式异常：{detail}", code="LLM_RESPONSE_INVALID", retryable=True)
+
+
 class DeepSeekClient:
     """封装 OpenAI 兼容模型调用；业务方法失败时返回降级信号，底层协议错误统一抛出。"""
     def __init__(self, transport=None, *, strict=False):
@@ -52,41 +56,82 @@ class DeepSeekClient:
         try:
             r = self.http.post("/chat/completions", json=body)
             r.raise_for_status()
-            payload = r.json()
-        except (httpx.HTTPError, ValueError) as e:
-            raise LLMError(f"{type(e).__name__}: {e}") from e
-        u = payload.get("usage", {})
-        self.usage["calls"] += 1
-        self.usage["prompt_tokens"] += u.get("prompt_tokens", 0)
-        self.usage["completion_tokens"] += u.get("completion_tokens", 0)
+        except httpx.TimeoutException as exc:
+            raise LLMError(f"{type(exc).__name__}: {exc}", code="LLM_TIMEOUT", retryable=True) from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            raise LLMError(f"{type(exc).__name__}: {exc}", code="LLM_REQUEST_FAILED",
+                           retryable=status in {408, 429} or status >= 500) from exc
+        except httpx.HTTPError as exc:
+            raise LLMError(f"{type(exc).__name__}: {exc}", code="LLM_REQUEST_FAILED", retryable=True) from exc
         try:
-            return payload["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as e:
-            raise LLMError(f"响应格式异常：{type(e).__name__}") from e
+            payload = r.json()
+        except ValueError as exc:
+            raise _invalid_response(type(exc).__name__) from exc
+        if not isinstance(payload, dict):
+            raise _invalid_response("顶层必须是对象")
+        usage = payload.get("usage", {})
+        if not isinstance(usage, dict):
+            raise _invalid_response("usage 必须是对象")
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        if any(not isinstance(value, (int, float)) or isinstance(value, bool)
+               for value in (prompt_tokens, completion_tokens)):
+            raise _invalid_response("usage token 计数必须是数字")
+        self.usage["calls"] += 1
+        self.usage["prompt_tokens"] += prompt_tokens
+        self.usage["completion_tokens"] += completion_tokens
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise _invalid_response("choices 必须是非空对象数组")
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            raise _invalid_response("message 必须是对象")
+        return message
 
     def _json(self, system, user) -> dict:
         msg = self.chat([{"role": "system", "content": system}, {"role": "user", "content": user}], json_mode=True)
+        content = msg.get("content")
+        if not isinstance(content, str):
+            raise _invalid_response("content 必须是字符串")
         try:
-            out = json.loads(msg.get("content") or "{}")
-        except json.JSONDecodeError as e:
-            raise LLMError(f"JSON 解析失败：{e}") from e
+            out = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise _invalid_response(f"JSON 解析失败：{exc}") from exc
         if not isinstance(out, dict):
-            raise LLMError("JSON 顶层必须是对象")
+            raise _invalid_response("JSON 顶层必须是对象")
         return out
 
     def react(self, messages, tools=None) -> dict:
         """把首个工具调用转换为 ReAct 动作；没有工具调用时以 finish 收束，参数 JSON 留待 Schema 校验。"""
         from app.application.agents.tools import llm_specs
         msg = self.chat(messages, tools=tools or llm_specs())
-        calls = msg.get("tool_calls") or []
+        content = msg.get("content")
+        if content is not None and not isinstance(content, str):
+            raise _invalid_response("content 必须是字符串或 null")
+        calls = msg.get("tool_calls")
+        if calls is None:
+            calls = []
+        if not isinstance(calls, list):
+            raise _invalid_response("tool_calls 必须是数组")
         if not calls:
-            return {"thought": msg.get("content") or "", "action": "finish", "args": {}}
+            return {"thought": content or "", "action": "finish", "args": {}}
+        if not isinstance(calls[0], dict) or not isinstance(calls[0].get("function"), dict):
+            raise _invalid_response("tool_calls[0].function 必须是对象")
         fn = calls[0]["function"]
+        name = fn.get("name")
+        if not isinstance(name, str) or not name:
+            raise _invalid_response("tool_calls[0].function.name 必须是非空字符串")
+        raw_args = fn.get("arguments")
+        if raw_args is None:
+            raw_args = "{}"
+        if not isinstance(raw_args, str):
+            raise _invalid_response("tool_calls[0].function.arguments 必须是字符串")
         try:
-            args = json.loads(fn.get("arguments") or "{}")
+            args = json.loads(raw_args)
         except json.JSONDecodeError:
-            args = {"_raw": fn.get("arguments")}
-        return {"thought": msg.get("content") or "", "action": fn["name"], "args": args}
+            args = {"_raw": raw_args}
+        return {"thought": content or "", "action": name, "args": args}
 
     def parse_intents(self, question, ctx, rule_subs):
         """让模型补充拆分乘客子诉求；任何模型或 Schema 失败都返回空结果并保留规则解析。"""
@@ -107,8 +152,11 @@ class DeepSeekClient:
     def summarize(self, turns):
         """生成保留订单、日期和金额的对话摘要；失败时由调用方使用本地摘要。"""
         try:
-            return self._json("把对话压缩成一句话摘要，保留订单、日期、金额。输出 {\"summary\": \"...\"}",
-                              json.dumps(turns, ensure_ascii=False)).get("summary")
+            summary = self._json("把对话压缩成一句话摘要，保留订单、日期、金额。输出 {\"summary\": \"...\"}",
+                                 json.dumps(turns, ensure_ascii=False)).get("summary")
+            if not isinstance(summary, str) or not summary.strip():
+                raise _invalid_response("summary 必须是非空字符串")
+            return summary
         except LLMError as exc:
             return self._optional_failure(exc, "摘要生成失败")
 

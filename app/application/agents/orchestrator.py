@@ -457,11 +457,12 @@ def run_turn(session_id, user_id, message, order_id=None, mode=None, client=None
     """启动一轮完整会话并在整轮持有会话锁；模式仅属于本请求，不写全局配置。"""
     from app.adapters.outbound.llm.factory import create_decision_engine
     mode = mode or S.get()["mode"]
-    _clients[session_id] = (create_decision_engine(mode, client=client, strict=strict)
-                            if client is not None else llm_mod.get_client(mode, strict=strict))
-    _begin_turn(session_id)
-    inp = {"session_id": session_id, "user_id": user_id, "question": message, "order_id": order_id, "mode": mode}
-    with memory.session_lock(session_id):        # 整轮持锁：load_session → save_session 不被并发打断
+    inp = {"session_id": session_id, "user_id": user_id, "question": message, "order_id": order_id,
+           "mode": mode, "strict": bool(strict) and mode == "deepseek"}
+    with memory.session_lock(session_id):        # 客户端、预算与整轮图执行共用同一把会话锁
+        _clients[session_id] = (create_decision_engine(mode, client=client, strict=strict)
+                                if client is not None else llm_mod.get_client(mode, strict=strict))
+        _begin_turn(session_id)
         return _drive(inp, session_id, on_event)
 
 
@@ -472,7 +473,9 @@ def resume(session_id, payload, client=None, mode=None, strict=False, on_event=N
         pending = pending_interrupt(session_id)
         if pending and pending.get("kind") == "confirm":
             raise ValueError("confirm 中断仅用于报价展示，请通过 Quote API 确认并由独立 TransactionAgent 办理")
-        checkpoint_mode = get_graph().get_state(_cfg(session_id)).values.get("mode", mode or "offline")
+        checkpoint = get_graph().get_state(_cfg(session_id)).values
+        checkpoint_mode = checkpoint.get("mode", mode or "offline")
+        strict = checkpoint.get("strict", strict)
         if client is not None:
             _clients[session_id] = create_decision_engine(checkpoint_mode, client=client, strict=strict)
         elif session_id not in _clients:

@@ -40,7 +40,7 @@ def today() -> date:
 
 
 def _next_month_day(month: int, day: int, d0: date) -> str | None:
-    for y in range(d0.year, d0.year + 5):      # 2 月 29 日要等到下一个闰年
+    for y in range(d0.year, d0.year + 9):      # 非闰世纪年可能形成 8 年间隔，如 2096 → 2104
         try:
             c = date(y, month, day)
         except ValueError:
@@ -97,11 +97,26 @@ def resolve_date(text: str) -> str | None:
     return None
 
 
+def _has_rejected_iso_date(text: str) -> bool:
+    """识别日历有效但被严格未来规则拒绝的 ISO 日期；无效日历日期仍走原有 Schema 追问。"""
+    for value in re.findall(r"\d{4}-\d{2}-\d{2}", text):
+        try:
+            if date.fromisoformat(value) <= today():
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def find_date(text: str):
-    """返回 (标准日期 | 原始模糊短语 | None)。"""
+    """返回 (标准日期 | 原始模糊短语 | None)；过去/今天的 ISO 日期不得作为原文重新注入。"""
     m = re.search(DATE_PHRASE, text)
     if m:
-        return resolve_date(m.group(0)) or m.group(0)
+        phrase = m.group(0)
+        resolved = resolve_date(phrase)
+        if resolved:
+            return resolved
+        return None if _has_rejected_iso_date(phrase) else phrase
     m = re.search(VAGUE_DATE, text)
     return m.group(0) if m else None
 
@@ -225,7 +240,10 @@ def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
             if not any(s.intent == intent for s in subs):
                 subs.append(SubQuery(intent=intent, text=seg.strip(" ，,。"),
                                      target_date=find_date(seg) if intent == "CHANGE" else None))
-    if llm is not None:
+    forced_raw = ctx.get("forced_date")
+    rejected_iso = _has_rejected_iso_date(question) or bool(
+        forced_raw and _has_rejected_iso_date(str(forced_raw)))
+    if llm is not None and not rejected_iso:
         subs = llm.parse_intents(question, ctx, subs) or subs
     if not subs:
         # 只有省略式追问（「那大后天呢」「那退票呢」这类短句）才继承上一轮意图；无关问题不继承
@@ -234,12 +252,13 @@ def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
         intent = ctx.get("forced_intent") or inherited or "POLICY"
         guessed = not (ctx.get("forced_intent") or inherited)
         subs = [SubQuery(intent=intent, text=question, target_date=find_date(question) if intent == "CHANGE" else None)]
-    forced_date = ctx.get("forced_date")
-    if forced_date:
-        forced_date = resolve_date(str(forced_date)) or str(forced_date)
-    for s in subs:   # 追问答案先换算成绝对未来日期；无法确定的原文留给 Schema 错误与再次追问
+    has_forced_date = bool(forced_raw and str(forced_raw).strip())
+    forced_date = None
+    if has_forced_date and not _has_rejected_iso_date(str(forced_raw)):
+        forced_date = resolve_date(str(forced_raw)) or str(forced_raw)
+    for s in subs:   # 被拒绝的 ISO 追问值保持缺失并直接追问；其他模糊原文仍留给 Schema 纠错
         if s.intent == "CHANGE":
-            s.target_date = forced_date or s.target_date or find_date(question)
+            s.target_date = forced_date if has_forced_date else (s.target_date or find_date(question))
 
     p = ParsedQuery(intents=[s.intent for s in subs], sub_queries=subs)
     oid = resolve_order(question, ctx)

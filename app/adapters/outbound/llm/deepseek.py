@@ -4,15 +4,8 @@ from app.application.agents.llm import LLMError
 
 
 def _error(exc: LLMError) -> dict:
-    message = str(exc)
-    timeout = "timeout" in message.lower()
-    return {
-        "code": "LLM_TIMEOUT" if timeout else "LLM_REQUEST_FAILED",
-        "message": message,
-        "retryable": timeout or any(name in message for name in (
-            "ConnectError", "ReadError", "WriteError", "RemoteProtocolError", "HTTPStatusError",
-        )),
-    }
+    """保留客户端已归一化的错误码和重试策略，不从错误文本二次猜测。"""
+    return {"code": exc.code, "message": str(exc), "retryable": exc.retryable}
 
 
 class DeepSeekDecisionEngine:
@@ -48,8 +41,7 @@ class DeepSeekDecisionEngine:
             return {**action, "source": "llm", "usage": dict(self.usage), "error": None}
         except LLMError as exc:
             if self.strict:
-                error = _error(exc)
-                raise LLMError(str(exc), code=error["code"], retryable=error["retryable"]) from exc
+                raise
             from app.application.agents.planning import rule_decide
             return {
                 **rule_decide(state), "source": "fallback", "fallback_reason": str(exc),
