@@ -24,18 +24,23 @@ Deliver a production-shaped AeroAgent workspace inside DSH: real DeepSeek dialog
 
 ### DSH presentation
 
-Replace the monolithic visual client with a small classic-script bootstrap and native ES modules served by FastAPI under `/dsh-ui`:
+**DSH owns the entire client shell. AeroAgent contributes modules only through official DSH extension points; it must not create, replace, or hide the host shell.** Replace the monolithic visual client with a classic-script bootstrap and native ES modules served by FastAPI under `/dsh-ui`:
 
-- `client.js`: classic-script ModuleLoader registration, stylesheet/module injection, no import/export.
-- `web/main.js`: shell mount, brand, root layout, lifecycle.
-- `web/router.js`: page modules, navigation ordering, stale-view cancellation.
+- `client.js`: classic-script ModuleLoader registration and official `ctx.slots`/`ctx.sidebarRightTabs` contributions, no import/export.
+- `sidebar.brand.mark` / `sidebar.brand.name`: airplane + AeroAgent within the native brand row; all surrounding DSH controls remain intact.
+- `sidebar.panellist`: native business navigation for chat, orders, Listing, and low-price watch.
+- `sidebar.panellist.actions`: native More menu, including the existing plugin and automation actions.
+- `sidebar.workspaces` / `sidebar.footer.action`: native conversation workspace and user-switcher placement above the existing user area.
+- `main`: native DSH main-panel pages for chat, orders, Listing, monitor, evaluation, rules, and data.
+- `sidebarRightTabs` + keyed `sidebar.right.pane.tab`: native right-sidebar flow, retrieval, memory, and verification tabs, preserving DSH expand/collapse/docking behavior.
+- `web/router.js`: page-module loading and stale-view cancellation within DSH main panels.
 - `web/store.js`: current user, selected order, per-user sessions, request aborts.
 - `web/api.js`: JSON/SSE transport, errors, demo user tokens, idempotency keys.
 - `web/components/`: safe DOM builder, inspector, quote cards, modal, timeline/funnel.
 - `web/pages/`: chat, orders, listing, monitor, evaluation, rules, data.
-- `web/styles.css`: DSH-compatible single-row navigation, sticky order strip, bottom composer, responsive inspector.
+- `web/styles.css`: supplemental module styling only, using inherited DSH typography/tokens; no independent application frame or purple theme.
 
-This preserves DSH-only usage without iframe or a second agent. Native modules provide production-shaped boundaries without adding a frontend build chain. All remote content is rendered through DOM/text nodes, not untrusted HTML strings.
+This preserves DSH-only usage without iframe or a second agent. Native modules provide production-shaped boundaries without adding a frontend build chain. All remote content is rendered through DOM/text nodes, not untrusted HTML strings. DSH retains its brand surroundings, new-session control, workspace/session browser, More behavior, remote access area, central conversation, and right-sidebar lifecycle.
 
 ### Backend boundaries
 

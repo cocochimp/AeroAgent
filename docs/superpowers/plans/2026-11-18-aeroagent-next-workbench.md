@@ -30,11 +30,11 @@
 
 - [ ] Write loader/router/store tests for approved nav order, user isolation, stale-view cancellation, and classic-script constraints.
 - [ ] Run tests and confirm missing modules fail.
-- [ ] Implement the classic bootstrap and ESM shell with safe DOM rendering, AeroAgent brand, unified business navigation, More, conversation history, bottom learning navigation, and user menu.
+- [ ] Implement the classic bootstrap and official DSH slot integration: `sidebar.brand.*`, `sidebar.panellist[.actions]`, `sidebar.workspaces`, `sidebar.footer.action`, `main`, and `sidebarRightTabs`. Do not create or hide a separate application shell; DSH retains its native sidebar/workspace/remote/right-sidebar behavior.
 - [ ] Port the vanilla inspector interactions: flow expand, per-subrequest funnel, token blocks, verification/fee tables, and honest empty states.
 - [ ] Implement sticky title/order strip and bottom quick actions/composer. Quick actions: query orders, generate change options, refund, change+refund.
 - [ ] Implement independent orders/listing/monitor/eval/rules/data pages using existing APIs first; preserve loading/error/empty states and cancel stale views.
-- [ ] Run client tests and existing frontend tests; commit `feat: modularize the DSH workbench shell`.
+- [ ] Run client tests and existing frontend tests, then verify the native DSH shell and all host controls in ego-lite before committing `feat: modularize the DSH workbench shell`.
 
 ### Task 2: Real DeepSeek Routing, Security, and Date Normalization
 
