@@ -1,6 +1,8 @@
+import asyncio
 import importlib
 
 from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, inspect, text
+from sqlalchemy.ext.asyncio import create_async_engine
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
@@ -56,6 +58,50 @@ def test_order_booking_and_watch_migration_upgrades_existing_orders(tmp_path):
         assert row["currency"] == "CNY"
         assert row["paid_at"] is None
     engine.dispose()
+
+
+def test_initialize_schema_upgrades_legacy_order_columns(tmp_path, monkeypatch):
+    from app.adapters.outbound.postgres import database
+
+    async def run():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'legacy-runtime.db'}")
+        async with engine.begin() as connection:
+            await connection.execute(text("PRAGMA foreign_keys=ON"))
+            await connection.execute(text("""
+                CREATE TABLE service_cases (
+                    case_id VARCHAR(64) PRIMARY KEY,
+                    order_id VARCHAR(64) REFERENCES orders(order_id)
+                )
+            """))
+            await connection.execute(text("""
+                CREATE TABLE orders (
+                    order_id VARCHAR(64) PRIMARY KEY,
+                    user_id VARCHAR(64) NOT NULL,
+                    passenger VARCHAR(160) NOT NULL,
+                    flight_no VARCHAR(16) NOT NULL,
+                    date VARCHAR(10) NOT NULL,
+                    airline VARCHAR(4) NOT NULL,
+                    cabin VARCHAR(8) NOT NULL,
+                    fare_product VARCHAR(40) NOT NULL,
+                    fare INTEGER NOT NULL,
+                    tax INTEGER NOT NULL,
+                    status VARCHAR(24) NOT NULL,
+                    ticket_no VARCHAR(40) NOT NULL
+                )
+            """))
+            await connection.execute(text("""
+                INSERT INTO orders VALUES ('ORD-OLD', 'u1', 'Existing', 'MU5101', '2026-09-28',
+                    'MU', 'Y', 'Y', 500, 50, 'ISSUED', '781-1')
+            """))
+        monkeypatch.setattr(database, "engine", engine)
+        await database.initialize_schema()
+        async with engine.connect() as connection:
+            columns = await connection.run_sync(
+                lambda sync: {column["name"] for column in inspect(sync).get_columns("orders")})
+        assert {"created_at", "updated_at", "currency", "paid_at"} <= columns
+        await engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_new_order_schema_uses_runtime_timestamp_defaults(tmp_path):

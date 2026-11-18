@@ -31,14 +31,37 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
+def _upgrade_lite_schema(connection) -> None:
+    """给历史 SQLite 表原地补列；不能用 batch 重建被案件外键引用的订单表。"""
+    columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(orders)")}
+    additions = {
+        "created_at": "DATETIME",
+        "updated_at": "DATETIME",
+        "currency": "VARCHAR(3) NOT NULL DEFAULT 'CNY'",
+        "paid_at": "DATETIME",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            connection.exec_driver_sql(f"ALTER TABLE orders ADD COLUMN {name} {definition}")
+    connection.exec_driver_sql(
+        "UPDATE orders SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+    connection.exec_driver_sql(
+        "UPDATE orders SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_orders_user_created ON orders (user_id, created_at)")
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_flight_route_date ON flights (origin, dest, date)")
+
+
 async def initialize_schema() -> None:
-    """lite 部署以 ORM 元数据为表结构事实来源。"""
+    """lite 部署先建缺失表，再幂等执行增量迁移升级历史库。"""
     if engine.url.get_backend_name() == "sqlite" and engine.url.database:
         from pathlib import Path
         Path(engine.url.database).parent.mkdir(parents=True, exist_ok=True)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
         if engine.url.get_backend_name() == "sqlite":
+            await connection.run_sync(_upgrade_lite_schema)
             # create_all 不会给历史库补唯一约束，用幂等唯一索引保证单报价单操作
             await connection.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_operations_quote_id ON operations (quote_id)"))
