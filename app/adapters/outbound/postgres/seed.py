@@ -1,5 +1,5 @@
 """向 SQLite 写入文档配套的虚构航司数据。"""
-from datetime import datetime, timezone
+from app import config as S
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,7 @@ async def seed_demo_data(session: AsyncSession, *, force: bool = False) -> None:
                       ServiceCaseRecord, OutboxRecord, OrderRecord, FlightRecord,
                       FeeRuleRecord, RuleRecord, ProfileRecord, AirlineReceiptRecord):
             await session.execute(delete(model))
-    now = datetime.now(timezone.utc)
+    now = S.now()
     fixture = load_demo_seed(now)
     session.add_all([ProfileRecord(**p) for p in fixture["profiles"]])
     await session.flush()

@@ -15,9 +15,16 @@ from app.adapters.inbound.http import openai_compat
 
 @pytest.fixture()
 def client():
-    # 不进入 lifespan：compat 端点契约不需要启动期 seed/worker，但需先建好 SQLite 投影表
+    # 不进入 lifespan：compat 端点契约不需要启动期 seed/worker，但需先建好投影表与案件表
     from app.adapters.outbound.sqlite import data
+    from app.adapters.outbound.postgres import database
+    from app.adapters.outbound.postgres.seed import seed_demo_data
     data.init(force=True)
+    async def prepare():
+        await database.initialize_schema()
+        async with database.SessionFactory() as session:
+            await seed_demo_data(session)
+    asyncio.run(prepare())
     yield TestClient(app)
 
 
@@ -394,6 +401,46 @@ def test_host_metadata_only_turn_is_local_only(monkeypatch):
     assert calls == []
 
 
+def test_selected_order_sets_passenger_when_host_sends_no_identity(monkeypatch, client):
+    """原生会话不传身份时，选中客票的归属就是乘客身份。"""
+    calls = []
+
+    async def fake_run(message, case_id=None, **kwargs):
+        calls.append((case_id, kwargs))
+        return {"case_id": "case_new", "user_id": kwargs["user_id"], "status": "PROPOSED", "final": "ok"}
+
+    monkeypatch.setattr(openai_compat, "_run_servicing_case", fake_run)
+    request = openai_compat.CompatRequest(messages=[
+        {"role": "user", "content": "@ORD20260926007 帮我改签到后天，请生成可选方案。"}])
+    asyncio.run(openai_compat._completion_content(request))
+
+    assert calls[0][0] is None
+    assert calls[0][1]["user_id"] == "u_wang"
+    assert calls[0][1]["order_id"] == "ORD20260926007"
+
+
+def test_switching_ticket_starts_a_new_case_instead_of_crossing_users(monkeypatch, client):
+    """同一会话换到另一张客票时，旧案件不属于当前客票，必须按新客票开案。"""
+    rendered = openai_compat._render_case_result({
+        "case_id": "case_old", "user_id": "u_zhang", "status": "PROPOSED", "final": "请确认"})
+    calls = []
+
+    async def fake_run(message, case_id=None, **kwargs):
+        calls.append((case_id, kwargs))
+        return {"case_id": "case_new", "user_id": kwargs["user_id"], "status": "PROPOSED", "final": "ok"}
+
+    monkeypatch.setattr(openai_compat, "_run_servicing_case", fake_run)
+    request = openai_compat.CompatRequest(messages=[
+        {"role": "user", "content": "@ORD20260926004 帮我改签到后天"},
+        {"role": "assistant", "content": rendered},
+        {"role": "user", "content": "@ORD20260926008 就按这个方案办理"},
+    ])
+    asyncio.run(openai_compat._completion_content(request))
+
+    assert calls[0][0] is None, "不能把王五的后续诉求写进张三的案件"
+    assert calls[0][1]["user_id"] == "u_wang"
+
+
 def test_case_metadata_carries_user_identity_across_turns(monkeypatch):
     rendered = openai_compat._render_case_result({
         "case_id": "case_li", "user_id": "u_li", "status": "PROPOSED", "final": "继续"})
@@ -416,13 +463,27 @@ def test_case_metadata_carries_user_identity_across_turns(monkeypatch):
     assert calls[0]["user_id"] == "u_li"
 
 
-def test_anonymous_case_continuation_requires_identity_before_case_read(monkeypatch):
-    from types import SimpleNamespace
-    from app.adapters.outbound.postgres import database
-    from app.adapters.outbound.postgres.models import ServiceCaseRecord
+def test_anonymous_case_continuation_resolves_owner_but_runner_still_requires_identity(monkeypatch):
+    """会话元数据只作为身份候选；真正读写案件仍以数据库归属为准。"""
+    captured = []
+    real_run = openai_compat._run_servicing_case
 
-    owned = SimpleNamespace(case_id="case_li", user_id="u_li", order_id=None,
-                            session_id="compat_li", status="RESULT_UNKNOWN", result={})
+    async def fake_run(message, case_id=None, **kwargs):
+        captured.append((case_id, kwargs))
+        return {"case_id": case_id, "user_id": kwargs["user_id"], "status": "PROPOSED", "final": "继续"}
+
+    monkeypatch.setattr(openai_compat, "_run_servicing_case", fake_run)
+    rendered = openai_compat._render_case_result({
+        "case_id": "case_li", "user_id": "u_li", "status": "PROPOSED", "final": "继续"})
+    request = openai_compat.CompatRequest(messages=[
+        {"role": "assistant", "content": rendered},
+        {"role": "user", "content": "继续"},
+    ])
+    asyncio.run(openai_compat._completion_content(request))
+    assert captured[0][0] == "case_li"
+    assert captured[0][1]["user_id"] == "u_li"
+
+    from app.adapters.outbound.postgres import database
     reads = []
 
     class Session:
@@ -430,27 +491,15 @@ def test_anonymous_case_continuation_requires_identity_before_case_read(monkeypa
         async def __aexit__(self, *args): return None
         async def get(self, model, key):
             reads.append(key)
-            return owned if model is ServiceCaseRecord else None
+            return None
 
+    monkeypatch.setattr(openai_compat, "_run_servicing_case", real_run)
     monkeypatch.setattr(database, "SessionFactory", Session)
-    rendered = openai_compat._render_case_result({
-        "case_id": "case_li", "user_id": "u_li", "status": "PROPOSED", "final": "继续"})
-    request = openai_compat.CompatRequest(messages=[
-        {"role": "assistant", "content": rendered},
-        {"role": "user", "content": "继续"},
-    ])
-
-    with pytest.raises(HTTPException) as caught:
-        asyncio.run(openai_compat._completion_content(request))
-    assert caught.value.status_code == 400
-    assert caught.value.detail["code"] == "USER_REQUIRED"
-    assert reads == []
-
     with pytest.raises(HTTPException) as direct:
         asyncio.run(openai_compat._run_servicing_case("继续", "case_li"))
     assert direct.value.status_code == 400
     assert direct.value.detail["code"] == "USER_REQUIRED"
-    assert reads == []
+    assert reads == [], "身份未解析时不得读取案件"
 
 
 def test_new_case_uses_selected_order_owner_and_requested_mode(monkeypatch):
@@ -563,3 +612,20 @@ def test_selected_order_only_traffic_is_throttled_by_order_owner(monkeypatch, cl
     assert first.status_code == 200
     assert second.status_code == 429
     assert other_owner.status_code == 200
+
+
+def test_unexpected_agent_failure_becomes_a_retryable_business_error(client, monkeypatch):
+    async def boom(*args, **kwargs):
+        raise RuntimeError("internal detail that must not leak")
+
+    monkeypatch.setattr(openai_compat, "_run_servicing_case", boom)
+    response = client.post("/v1/chat/completions", json={
+        "model": "aeroagent-mock",
+        "metadata": {"user_id": "u_zhang"},
+        "messages": [{"role": "user", "content": "帮我改签到后天"}],
+    })
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "AGENT_FAILED"
+    assert error["details"]["retryable"] is True
+    assert "internal detail" not in response.text

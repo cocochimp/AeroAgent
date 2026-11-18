@@ -10,19 +10,64 @@ from app import config as settings
 from .models import Base
 
 
-DATABASE_URL = os.getenv("DATABASE_URL") or f"sqlite+aiosqlite:///{settings.VAR_DIR / 'aeroagent.db'}"
-engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
-SessionFactory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+def database_url() -> str:
+    """数据库地址按当前配置解析；测试切到临时目录时不会复用生产库连接。"""
+    return os.getenv("DATABASE_URL") or f"sqlite+aiosqlite:///{settings.VAR_DIR / 'aeroagent.db'}"
 
 
-if engine.url.get_backend_name() == "sqlite":
-    @event.listens_for(engine.sync_engine, "connect")
-    def _configure_sqlite(dbapi_connection, _):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
+_engine = None
+_engine_url = None
+
+
+def _configure_sqlite(dbapi_connection, _):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
+
+
+def get_engine():
+    """惰性创建引擎；路径变化时切到新库，避免测试或演示重置写进正在使用的库。"""
+    global _engine, _engine_url
+    url = database_url()
+    if _engine is None or _engine_url != url:
+        _engine = create_async_engine(url, pool_pre_ping=True)
+        _engine_url = url
+        if _engine.url.get_backend_name() == "sqlite":
+            event.listen(_engine.sync_engine, "connect", _configure_sqlite)
+    return _engine
+
+
+class _EngineProxy:
+    """Keep the historical `engine` face while resolving the actual engine lazily."""
+
+    @property
+    def url(self):
+        return get_engine().url
+
+    def begin(self):
+        return get_engine().begin()
+
+    async def dispose(self):
+        global _engine, _engine_url
+        if _engine is not None:
+            await _engine.dispose()
+            _engine = None
+            _engine_url = None
+
+
+engine = _EngineProxy()
+
+
+class _SessionFactory:
+    """Session maker bound to the current database path at call time."""
+
+    def __call__(self, **kwargs):
+        return async_sessionmaker(get_engine(), expire_on_commit=False, class_=AsyncSession)(**kwargs)
+
+
+SessionFactory = _SessionFactory()
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -55,12 +100,13 @@ def _upgrade_lite_schema(connection) -> None:
 
 async def initialize_schema() -> None:
     """lite 部署先建缺失表，再幂等执行增量迁移升级历史库。"""
-    if engine.url.get_backend_name() == "sqlite" and engine.url.database:
+    active = get_engine()
+    if active.url.get_backend_name() == "sqlite" and active.url.database:
         from pathlib import Path
-        Path(engine.url.database).parent.mkdir(parents=True, exist_ok=True)
-    async with engine.begin() as connection:
+        Path(active.url.database).parent.mkdir(parents=True, exist_ok=True)
+    async with active.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-        if engine.url.get_backend_name() == "sqlite":
+        if active.url.get_backend_name() == "sqlite":
             await connection.run_sync(_upgrade_lite_schema)
             # create_all 不会给历史库补唯一约束，用幂等唯一索引保证单报价单操作
             await connection.execute(text(

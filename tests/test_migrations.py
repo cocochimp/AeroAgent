@@ -93,7 +93,7 @@ def test_initialize_schema_upgrades_legacy_order_columns(tmp_path, monkeypatch):
                 INSERT INTO orders VALUES ('ORD-OLD', 'u1', 'Existing', 'MU5101', '2026-09-28',
                     'MU', 'Y', 'Y', 500, 50, 'ISSUED', '781-1')
             """))
-        monkeypatch.setattr(database, "engine", engine)
+        monkeypatch.setattr(database, "get_engine", lambda: engine)
         await database.initialize_schema()
         async with engine.connect() as connection:
             columns = await connection.run_sync(

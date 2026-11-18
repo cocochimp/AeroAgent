@@ -299,12 +299,22 @@ def understand(question: str, ctx: dict, llm=None) -> ParsedQuery:
     if llm is not None and not rejected_iso:
         provider_subs = llm.parse_intents(question, ctx, subs)
         if provider_subs:
-            subs = provider_subs
-            for sub in subs:
-                if sub.target_date:
-                    normalized = normalize_provider_date(sub.target_date)
-                    provider_date_rejected = provider_date_rejected or normalized is None
-                    sub.target_date = normalized
+            local_actionable = [s for s in subs if s.intent in ("CHANGE", "REFUND")]
+            provider_actionable = [s for s in provider_subs if s.intent in ("CHANGE", "REFUND")]
+            if local_actionable and not provider_actionable:
+                # 乘客原话已明确改签/退票时，不能因为模型把它归为政策咨询就丢掉办理意图。
+                provider_date = next((s.target_date for s in provider_subs
+                                      if s.intent == "CHANGE" and s.target_date), None)
+                if provider_date:
+                    for sub in local_actionable:
+                        sub.target_date = sub.target_date or provider_date
+            else:
+                subs = provider_subs
+                for sub in subs:
+                    if sub.target_date:
+                        normalized = normalize_provider_date(sub.target_date)
+                        provider_date_rejected = provider_date_rejected or normalized is None
+                        sub.target_date = normalized
     if forced_intent:
         forced_text = str(forced_intent_raw).strip()
         text = question if _is_intent_selector(forced_text) else forced_text

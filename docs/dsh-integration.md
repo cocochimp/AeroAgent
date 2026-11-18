@@ -73,9 +73,6 @@ npx --offline @deepseek-ai/dsh@0.1.x plugin --profile headless add /absolute/pat
         apiKeyEnv: AEROAGENT_STUB_KEY
         api: openai-completions
         baseURL: http://127.0.0.1:8000/v1
-        # 本机演示身份：宿主原生会话经此头声明演示用户，业务数据仍按该用户隔离
-        headers:
-          x-aeroagent-user: u_zhang
         models:
           - id: aeroagent-deepseek
             input: [text]
@@ -100,7 +97,7 @@ DSH_HOME=/tmp/dsh-home AEROAGENT_STUB_KEY=dummy \
 - `POST /v1/chat/completions`，支持 SSE stream 和宿主 `tool_calls`。
 - 每个 AeroAgent 答复包含不可见的案件元数据，下一轮恢复原案件和会话，不会把追问误建成新案件。
 - 可办理报价由后端渲染为乘客可读的方案区块，内部 `quote_id` 不出现在正文；明细同时保留在执行观测栏。
-- `headers.x-aeroagent-user` 由宿主注入，声明本机演示用户；选中客票时以后端订单归属为准，两者冲突会被拒绝。
+- 原生会话以选中客票的归属确定乘客（`@订单号`）；同一会话换到另一张客票时自动按新客票开案，不会串用旧案件。
 
 ## 学员操作与交易状态
 

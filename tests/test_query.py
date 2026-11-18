@@ -314,3 +314,26 @@ def test_unrelated_question_does_not_inherit_intent():
     p = query.understand("宠物能带上飞机吗", ctx(selected_order_id=f"ORD{D}001", last_intent="REFUND"))
     assert p.sub_queries[0].intent == "POLICY"
     assert p.clarify is not None and p.clarify["field"] == "intent"
+
+
+def test_provider_cannot_downgrade_explicit_change_request_to_policy():
+    """模型把「帮我改签到后天」理解成政策咨询时，仍必须保留办理意图。"""
+    class LLM:
+        def parse_intents(self, *args):
+            return [SubQuery(intent="POLICY", text="改签规则")]
+
+    p = query.understand("帮我改签到后天，并说明差价", ctx(selected_order_id=f"ORD{D}001"), llm=LLM())
+
+    assert p.intents == ["CHANGE"]
+    assert p.sub_queries[0].target_date is not None
+
+
+def test_provider_may_supply_the_target_date_for_local_change_intent():
+    class LLM:
+        def parse_intents(self, *args):
+            return [SubQuery(intent="CHANGE", text="改签", target_date="2026-10-03")]
+
+    p = query.understand("改一下行程", ctx(selected_order_id=f"ORD{D}001"), llm=LLM())
+
+    assert p.intents == ["CHANGE"]
+    assert p.sub_queries[0].target_date == "2026-10-03"

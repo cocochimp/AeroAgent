@@ -123,6 +123,16 @@ def _phrase_ok(sentence, m, rule_texts) -> bool:
     return any(phrase in t for t in rule_texts)
 
 
+PRODUCT_LABELS = ("经济舱折扣", "经济舱特价", "经济舱全价", "头等舱全价", "公务舱全价", "团队票")
+
+
+def _without_product_labels(sentence: str) -> str:
+    """票种名称本身含「折扣/特价」等词，不能当成营销承诺去核查。"""
+    for label in PRODUCT_LABELS:
+        sentence = sentence.replace(label, "票种")
+    return sentence
+
+
 def _unsupported(unit):
     cited, policy = _cited_rules(unit), _cited_rules(unit, only_policy=True)
     rates = {r["fee"].get("rate_pct") for r in _fee_results(unit)}
@@ -131,7 +141,7 @@ def _unsupported(unit):
     sentences = raw if len(raw) == len(norm) else norm       # 对外报告原文句子，判断用归一化后的句子
     bad = []
     for s, ns in zip(sentences, norm):
-        s_orig, s = s, ns
+        s_orig, s = s, _without_product_labels(ns)
         for m in CLAIM_KEYS.finditer(s):
             if m.group().endswith("%"):
                 ok = int(m.group()[:-1]) in rates or _phrase_ok(s, m, policy)

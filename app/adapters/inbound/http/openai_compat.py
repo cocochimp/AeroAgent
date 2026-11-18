@@ -1,5 +1,6 @@
 """OpenAI 兼容端点：让 DSH 等外部宿主把 AeroAgent 当作模型提供方接入。"""
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -354,10 +355,17 @@ async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] |
     case_id = case_metadata.get("case_id")
     user_id, selected_order_id = _request_identity(request)
     case_user_id = case_metadata.get("user_id")
+    # 没有客票也没有显式身份时，案件元数据就是本轮身份来源（案件号不可猜且仅本人可读）。
+    if not user_id and case_user_id:
+        user_id = case_user_id
+    # 客票上下文优先：乘客在同一会话里换了另一张客票时，旧案件不再适用，直接按新客票开案。
+    explicit_user = _explicit_user_id(request)
     if case_id and not user_id:
         raise HTTPException(400, detail={"code": "USER_REQUIRED", "message": "继续案件前请提供用户身份或选择订单"})
     if case_user_id and user_id != case_user_id:
-        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "案件不存在"})
+        if explicit_user:
+            raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "案件不存在"})
+        case_id = None
     names = _tool_names(request)
     if (not case_id and "aeroagent_list_orders" in names and _ORDER_INTENT.search(_last_user(request))
             and not _SERVICING_INTENT.search(_last_user(request))):
@@ -367,8 +375,18 @@ async def _completion_content(request: CompatRequest) -> tuple[str, list[dict] |
                  "function": {"name": "aeroagent_list_orders",
                               "arguments": json.dumps({"user_id": user_id})}}]
         return "", call
-    result = await _run_servicing_case(_last_user(request), case_id, mode=mode, user_id=user_id,
-                                       order_id=selected_order_id, strict=mode == "deepseek")
+    try:
+        result = await _run_servicing_case(_last_user(request), case_id, mode=mode, user_id=user_id,
+                                           order_id=selected_order_id, strict=mode == "deepseek")
+    except HTTPException:
+        raise
+    except LLMError:
+        raise
+    except Exception as exc:                       # noqa: BLE001 - 兜底必须是可重试的业务错误
+        logging.getLogger(__name__).exception("compat servicing failed")
+        raise HTTPException(503, detail={
+            "code": "AGENT_FAILED", "message": "本轮处理失败，请重试",
+            "details": {"retryable": True, "type": type(exc).__name__}}) from exc
     return _render_case_result(result), None
 
 

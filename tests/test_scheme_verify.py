@@ -425,3 +425,30 @@ def test_sweep_templates_pass_verify_for_every_order(n):
         s = scheme.generate(res)
         v = verify.check(s.model_dump(), res)
         assert v["passed"] and v["confidence"] == 1.0, (o["order_id"], s.text, v)
+
+
+def test_change_option_without_target_is_not_bookable_instead_of_crashing():
+    """引擎允许改签但缺少目标时，必须给出不可办理说明，而不是 KeyError 500。"""
+    from app.application.agents import proposal
+
+    result = {"intent": "CHANGE", "text": "改签", "rules": [{"id": "R1", "title": "t", "content": "c"}],
+              "fee": {"rule_id": "R1", "allowed": True, "reason": "缺少目标",
+                      "change_fee": 0, "fare_diff": 0, "total": 0}}
+    option, text = proposal._option(result)
+    assert option.allowed is False
+    assert option.type == "CHANGE"
+    assert "缺少目标" in (option.notes or "") or "缺少目标" in text
+
+
+def test_fare_product_label_is_not_treated_as_an_unsupported_claim():
+    """「经济舱折扣」是票种名称，不能因为它含「折扣」就删掉正确的航班状态说明。"""
+    from app.application.agents import verification as verify
+
+    unit = {"raw": "您的订单ORD20261118008（南方海航 CZ5103 杭州→北京 2026-11-21 11:30 经济舱折扣）航班状态为延误",
+            "text": "您的订单ORD20261118008（南方海航 CZ5103 杭州→北京 2026-11-21 11:30 经济舱折扣）航班状态为延误",
+            "results": [{"intent": "STATUS", "status": {"flight_no": "CZ5103", "date": "2026-11-21",
+                                                        "dep_time": "11:30", "status": "delayed",
+                                                        "delay_min": 60}, "rules": []}],
+            "options": [{"type": "STATUS"}]}
+    _, bad = verify._unsupported(unit)
+    assert bad == []

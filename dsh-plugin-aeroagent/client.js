@@ -1199,6 +1199,20 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
       }, 120);
       return () => { disposed = true; clearTimeout(timer); };
     }, []);
+    React.useEffect(() => {
+      let disposed = false;
+      if (!order) return undefined;
+      // 演示数据可能被重置：本地留存的客票已不存在时立即清空，避免把死订单号发进对话。
+      Promise.resolve(fetchNativeOrders({ userId, fetchImpl }))
+        .then((result) => {
+          if (disposed) return;
+          const list = Array.isArray(result) ? result : (result?.orders || []);
+          const exists = list.some((item) => item.order_id === order.order_id);
+          if (!exists) selection.select(userId, null);
+        })
+        .catch(() => { /* 后端不可达时保留选择，由发送时报错并提示重试。 */ });
+      return () => { disposed = true; };
+    }, [userId, order?.order_id]);
     if (!order) {
       return h("section", { "data-aeroagent-order-context-bar": "empty", "aria-label": "AeroAgent 客票上下文条",
         style: { ...orderContextBarFrame, display: "flex", alignItems: "center", justifyContent: "space-between",

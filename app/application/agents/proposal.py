@@ -30,21 +30,28 @@ def _option(r: dict) -> tuple[SchemeOption, str]:
         return (SchemeOption(type=r["intent"], title="不可办理", allowed=False, rule_refs=refs, notes=fee["reason"]),
                 f"很抱歉，{fee['reason']}（依据规则{refs[0] if refs else ''}）。")
     if r["intent"] == "CHANGE":
-        t = fee["target"]
-        items = [FeeItem(name="改期费", amount=fee["change_fee"]), FeeItem(name="票面差价", amount=fee["fare_diff"])]
+        t = fee.get("target")
+        if not t:
+            # 引擎允许改签但没有给出目标（例如日期仍未确认）：不能生成可办理报价，也不能抛 500。
+            return (SchemeOption(type="CHANGE", title="改签目标待确认", allowed=False, rule_refs=refs,
+                                 notes=fee.get("reason") or "缺少改签目标日期或航班"),
+                    f"改签目标尚未确认：{fee.get('reason') or '请补充目标日期或航班后再计算费用'}。")
+        items = [FeeItem(name="改期费", amount=fee.get("change_fee", 0)),
+                 FeeItem(name="票面差价", amount=fee.get("fare_diff", 0))]
         from app.application.agents.understanding import format_date_label
         date_label = format_date_label(t["date"])
-        head = "因航班非自愿变动，" if fee["involuntary"] else f"当前处于{fee['window_label']}档，"
-        text = (f"{head}改签至{date_label} {t['flight_no']}（{t['dep_time']}）：改期费{fee['change_fee']}元，"
-                f"票面差价{fee['fare_diff']}元，合计需支付{fee['total']}元。")
+        head = "因航班非自愿变动，" if fee.get("involuntary") else f"当前处于{fee.get('window_label', '当前')}档，"
+        text = (f"{head}改签至{date_label} {t['flight_no']}（{t['dep_time']}）：改期费{fee.get('change_fee', 0)}元，"
+                f"票面差价{fee.get('fare_diff', 0)}元，合计需支付{fee.get('total', 0)}元。")
         return (SchemeOption(type="CHANGE", title=f"改签至 {date_label} {t['flight_no']}", fee_items=items,
-                             total=fee["total"], rule_refs=refs), text)
-    items = [FeeItem(name="退票费", amount=fee["refund_fee"]), FeeItem(name="机场建设费退还", amount=fee["tax"])]
-    head = "因航班非自愿变动，" if fee["involuntary"] else f"当前处于{fee['window_label']}档，"
-    text = (f"{head}退票：退票费{fee['refund_fee']}元，退还机场建设费{fee['tax']}元，"
-            f"预计退款{fee['refund_amount']}元。")
-    return (SchemeOption(type="REFUND", title="退票", fee_items=items, total=fee["refund_amount"], rule_refs=refs),
-            text)
+                             total=fee.get("total", 0), rule_refs=refs), text)
+    items = [FeeItem(name="退票费", amount=fee.get("refund_fee", 0)),
+             FeeItem(name="机场建设费退还", amount=fee.get("tax", 0))]
+    head = "因航班非自愿变动，" if fee.get("involuntary") else f"当前处于{fee.get('window_label', '当前')}档，"
+    text = (f"{head}退票：退票费{fee.get('refund_fee', 0)}元，退还机场建设费{fee.get('tax', 0)}元，"
+            f"预计退款{fee.get('refund_amount', 0)}元。")
+    return (SchemeOption(type="REFUND", title="退票", fee_items=items, total=fee.get("refund_amount", 0),
+                         rule_refs=refs), text)
 
 
 def generate(results: list[dict], feedback: list[str] | None = None, llm=None, context: dict | None = None) -> SchemeOutput:
