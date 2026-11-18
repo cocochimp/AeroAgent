@@ -318,7 +318,7 @@ def _render_quote_section(quote: dict) -> str:
     table = ["| 项目 | 内容 |", "| --- | --- |"]
     table.extend(f"| {label} | {value} |" for label, value in rows)
     return "\n".join([f"### {action}方案", *table,
-                      "", "> 方案由服务端运价引擎核对；确认办理功能将在后续接入。"])
+                      "", "> 方案由服务端运价引擎核对；核对后可在输入框上方确认办理。"])
 
 
 def _render_case_result(result: dict) -> str:

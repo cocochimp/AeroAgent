@@ -36,4 +36,5 @@ test("registers AeroAgent through native DSH slots instead of replacing the host
   assert.ok(calls.some((call) => call.name === "sidebar.right.pane.tab" && call.key === "dsh-plugin-aeroagent"));
   assert.ok(calls.some((call) => call.name === "conversation.session.header.utilities" && call.id === "aeroagent-execution-inspector"));
   assert.ok(calls.some((call) => call.name === "conversation.input.dock" && call.id === "aeroagent-order-context-bar"));
+  assert.ok(calls.some((call) => call.name === "conversation.input.dock" && call.id === "aeroagent-quote-dock"));
 });

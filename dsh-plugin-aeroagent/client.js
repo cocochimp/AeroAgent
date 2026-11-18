@@ -513,6 +513,28 @@ function installNativeBrandSkin() {
   return () => style.remove();
 }
 
+function nativeActionableQuotes(record) {
+  const quotes = Array.isArray(record?.quotes) ? record.quotes : [];
+  return quotes.filter((quote) => quote && quote.status === "OFFERED" &&
+    ["CHANGE", "REFUND"].includes(quote.action));
+}
+
+function nativeCasePhase(record) {
+  if (!record) return "idle";
+  if (record.status === "PROCESSING") return "processing";
+  if (record.status === "WAITING_CONFIRMATION") return nativeActionableQuotes(record).length ? "confirm" : "idle";
+  if (record.status === "COMPLETED") return "done";
+  return "idle";
+}
+
+function nativeOperationSummary(record) {
+  const operation = record?.result?.operation;
+  if (!operation) return null;
+  if (operation.status === "CHANGED") return `改签完成 · 新票号 ${operation.ticket_no || "—"}`;
+  if (operation.status === "REFUNDED") return `退票完成 · 退款 ¥${operation.customer_amount ?? "—"}`;
+  return `办理结束 · ${operation.status}`;
+}
+
 /** Contribute AeroAgent without replacing, moving, or hiding any DSH host UI. */
 function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
   fetchImpl = globalThis.fetch } = {}) {
@@ -1247,6 +1269,115 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
         h("button", { type: "button", onClick: () => fill("请分别给出改签和退票方案，比较费用后再由我选择。"),
           style: chip }, "改签 + 退票")));
   }
+  function NativeQuoteDock() {
+    const { userId } = useNativeUser();
+    const [record, setRecord] = React.useState(null);
+    const [busy, setBusy] = React.useState(false);
+    const [notice, setNotice] = React.useState("");
+    const [index, setIndex] = React.useState(0);
+    const [armed, setArmed] = React.useState("");
+    const [closed, setClosed] = React.useState("");
+    const [reload, setReload] = React.useState(0);
+    React.useEffect(() => {
+      let active = true;
+      let timer = null;
+      let controller = null;
+      async function load() {
+        controller?.abort();
+        controller = new AbortController();
+        let next = null;
+        try {
+          next = await fetchNativeLatestCase({ userId, signal: controller.signal, fetchImpl });
+          if (active) setRecord(next);
+        } catch { /* 保留上一份快照，避免办理中的状态闪断。 */ }
+        if (!active) return;
+        const phase = nativeCasePhase(next);
+        timer = setTimeout(load, phase === "processing" || phase === "confirm" ? 2000 : 8000);
+      }
+      load();
+      return () => { active = false; if (timer) clearTimeout(timer); controller?.abort(); };
+    }, [userId, reload]);
+    const phase = nativeCasePhase(record);
+    const quotes = nativeActionableQuotes(record);
+    const quote = quotes[Math.min(index, Math.max(quotes.length - 1, 0))];
+    const operation = nativeOperationSummary(record);
+    async function confirmQuote(target) {
+      if (!target) return;
+      setBusy(true);
+      setNotice("正在复核价格并提交办理…");
+      const keys = requestKeys(target.quote_id);
+      try {
+        await fetchNativeV1({ path: `/quotes/${encodeURIComponent(target.quote_id)}/confirm`, method: "POST",
+          body: { confirmation_id: keys.confirmationId, idempotency_key: keys.idempotencyKey }, userId, fetchImpl });
+        setNotice("已受理，正在等待航司最终状态…");
+      } catch (failure) {
+        const code = failure?.body?.error?.code;
+        setNotice(code === "REQUOTE_REQUIRED"
+          ? "价格已更新，请核对最新方案后再确认。"
+          : `${failure.message}；可直接重试，重复提交不会重复扣款。`);
+      } finally {
+        setBusy(false);
+        setArmed("");
+        setReload((value) => value + 1);
+      }
+    }
+    async function declineAll(caseId) {
+      setBusy(true);
+      setNotice("正在取消本次报价…");
+      try {
+        await fetchNativeV1({ path: `/cases/${encodeURIComponent(caseId)}/messages`, method: "POST",
+          body: { message: "暂不办理" }, userId, fetchImpl });
+        setNotice("已取消本次报价，订单未发生变化。");
+      } catch (failure) {
+        setNotice(`取消失败：${failure.message}`);
+      } finally {
+        setBusy(false);
+        setArmed("");
+        setReload((value) => value + 1);
+      }
+    }
+    if (phase === "idle" && !notice) return null;
+    if (closed && closed === record?.case_id) return null;
+    const label = quote?.action === "REFUND" ? "退票方案" : "改签方案";
+    const totalLabel = quote?.action === "REFUND" ? "预计退款" : "应付合计";
+    const chip = { ...secondaryButton, padding: "4px 10px", fontSize: 11 };
+    const summary = phase === "processing" ? "正在办理 · 已提交航司，等待最终状态…"
+      : phase === "done" ? (operation || "办理已完成")
+      : quote ? `${label} · ${totalLabel} ¥${Number(quote.amount || 0).toLocaleString("zh-CN")}`
+      : "方案处理中…";
+    return h("section", { "data-aeroagent-quote-dock": phase, "aria-label": "AeroAgent 方案确认",
+      style: { ...orderContextBarFrame, padding: "7px 10px", border: "1px solid var(--dsw-alias-border-l2)",
+        borderRadius: 8, background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-primary)",
+        fontSize: 12 } },
+      h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 } },
+        h("div", { style: { display: "flex", alignItems: "center", gap: 8, minWidth: 0, flexWrap: "wrap" } },
+          h("strong", { style: { fontSize: 12, fontWeight: 600 } }, summary),
+          phase === "confirm" && quotes.length > 1 ? h("select", { "aria-label": "选择方案",
+            value: index, onChange: (event) => { setIndex(Number(event.target.value)); setArmed(""); }, style: chip },
+            quotes.map((item, position) => h("option", { key: item.quote_id, value: position },
+              `方案 ${position + 1}/${quotes.length}`))) : null,
+          phase === "confirm" && quote ? h("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontSize: 10 } },
+            (quote.details?.[0]?.rule_refs || []).join("、")) : null),
+        h("div", { style: { display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto" } },
+          phase === "confirm" && armed === quote?.quote_id ? h(React.Fragment, null,
+            h("button", { type: "button", disabled: busy, onClick: () => confirmQuote(quote), style: { ...chip,
+              borderColor: "var(--dsw-alias-state-business-primary)" } },
+            busy ? "提交中…" : `确认提交 ¥${Number(quote.amount || 0).toLocaleString("zh-CN")}`),
+            h("button", { type: "button", disabled: busy, onClick: () => setArmed(""), style: chip }, "返回")) : null,
+          phase === "confirm" && armed !== quote?.quote_id ? h(React.Fragment, null,
+            h("button", { type: "button", disabled: busy, onClick: () => setArmed(quote?.quote_id || ""),
+              style: { ...chip, borderColor: "var(--dsw-alias-border-l3)" } }, "确认办理"),
+            h("button", { type: "button", disabled: busy, onClick: () => declineAll(record?.case_id), style: chip },
+            "暂不办理")) : null,
+          phase === "processing" ? h("span", { style: { color: "var(--dsw-alias-label-secondary)", fontSize: 11 } },
+            "办理中") : null,
+          phase === "done" ? h("button", { type: "button", onClick: () => setClosed(record?.case_id),
+            style: chip }, "完成") : null)),
+      notice && phase !== "done"
+        ? h("p", { role: "status", style: { margin: "5px 0 0", color: "var(--dsw-alias-label-secondary)",
+          fontSize: 11, lineHeight: 1.5 } }, notice)
+        : null);
+  }
   function learningPage(id, title, description, actions, ...content) {
     return h("main", { "data-aeroagent-native-page": id, style: { boxSizing: "border-box", height: "100%",
       overflow: "auto", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", font: "inherit" } },
@@ -1601,6 +1732,9 @@ function nativeSlotsApply(ctx, React, { storage = globalThis.localStorage,
   ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
     name: "conversation.input.dock", id: "aeroagent-order-context-bar", order: 10,
   }, NativeOrderContextBar));
+  ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
+    name: "conversation.input.dock", id: "aeroagent-quote-dock", order: 20,
+  }, NativeQuoteDock));
 
   for (const page of NATIVE_PAGES) {
     const panelId = `aeroagent-${page.id}`;
@@ -1695,7 +1829,8 @@ globalThis.AeroAgentClient = Object.assign(globalThis.AeroAgentClient || {},
     nativeFeeComparisons, nativeVerificationState, parseNativeCompletion, fetchNativeChat, createNativeConversationStore,
     nativeOrderBindingStatus, openNativeAeroConversation, NATIVE_DEMO_USERS, createNativeUserStore, createNativeWatchStore, scrollNativeChatToLatest,
     fetchNativeAdmin, fetchNativeRules, fetchNativeEvaluation, startNativeEvaluation, fetchNativeDemoData,
-    filterNativeEvaluationCases, isNativeEvaluationTerminal, installNativeBrandSkin });
+    filterNativeEvaluationCases, isNativeEvaluationTerminal, installNativeBrandSkin,
+    nativeActionableQuotes, nativeCasePhase, nativeOperationSummary });
 if (typeof window !== "undefined" && window.__ModuleLoader__ && !globalThis.__AERO_DSH_MODULE_REGISTERED) {
   window.__ModuleLoader__.load({ id: "dsh-plugin-aeroagent", factory: (require) => ({
     inject,

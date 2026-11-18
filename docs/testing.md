@@ -29,6 +29,8 @@ uv run pytest tests/test_openai_compat.py tests/test_native_e2e.py -q
 | 他人案件 | 统一 404 |
 | 未知订单 | 404 `ORDER_NOT_FOUND`，不创建案件 |
 | 内部字段 | 正文不出现 `quote_id`、JSON、案件标记 |
+| 确认办理 | 202 受理 → 交易完成，案件 `COMPLETED`、报价 `EXECUTED`、订单换新票号 |
+| 同幂等键重放 | 返回同一 `operation_id`，不重复出票 |
 
 ## 3. 全量后端回归
 
@@ -50,7 +52,8 @@ cd dsh-plugin-aeroagent && npm test     # 87 passed
 2. 切换到王五 → 选择客票 → 客票条显示该订单。
 3. 发送改签请求 → 出现方案表，无 JSON/内部 ID。
 4. 右栏自动显示本轮案件编号与 `WAITING_CONFIRMATION`。
-5. 重复发送两次，结果一致；失败时显示可重试错误而不是 500。
+5. 输入框上方出现「方案待确认」，二次确认后进入办理中，最终显示新票号。
+6. 重复发送两次，结果一致；失败时显示可重试错误而不是 500。
 
 ## 隔离与数据安全
 
