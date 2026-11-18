@@ -8,6 +8,7 @@
 - 论断关键词按短语（关键词 + 后 2 个汉字）在单条被引用规则中核对；百分比必须等于引擎 rate_pct。
 - 只要有一句无依据论断，置信度为 0。
 """
+from collections.abc import Mapping, Sequence
 import re
 import unicodedata
 
@@ -211,6 +212,93 @@ def check(scheme: dict, results: list[dict], fact_checker=None) -> dict:
             "unsupported_claims": unsupported, "bad_refs": bad_refs, "errors": errors,
             "support_ratio": round(support_ratio, 2), "threshold": threshold,
             "fee_comparison": fee_comparison, "passed": confidence >= threshold}
+
+
+def check_change_options(options: Sequence[Mapping], quotes: Sequence[Mapping] | None = None,
+                         profile: Mapping | None = None) -> dict:
+    """Verify SmartMock cards against independent quotes and canonical factual reasons.
+
+    A quote is the pricing engine's validated output, not provider narrative. The
+    canonical proposal is regenerated to check ranking and rationale as well as all
+    structured amounts, candidate identity, target fields, fees, and rule references.
+    """
+    from app.application.agents.proposal import generate_change_options
+    from app.application.smart_mock import candidate_id_for
+
+    errors, amount_errors, bad_quotes, unsupported, bad_refs, fee_comparison = [], [], [], [], [], []
+    if not 2 <= len(options) <= 5:
+        errors.append("SmartMock 改签方案必须为 2–5 个")
+    source_quotes = ([option.get("quote", {}) for option in options] if quotes is None else list(quotes))
+    try:
+        expected_options = generate_change_options(source_quotes, profile)
+    except (KeyError, TypeError, ValueError) as exc:
+        expected_options = []
+        errors.append(f"报价无法校验：{exc}")
+    expected_by_id = {option["candidate_id"]: option for option in expected_options}
+
+    actual_ids = [option.get("candidate_id") for option in options]
+    if len(set(actual_ids)) != len(actual_ids):
+        errors.append("candidate_id 不得重复")
+    if actual_ids != [option["candidate_id"] for option in expected_options]:
+        errors.append("候选顺序或 candidate_id 与独立报价排名不一致")
+
+    for option in options:
+        candidate_id = option.get("candidate_id")
+        expected = expected_by_id.get(candidate_id)
+        if expected is None:
+            errors.append(f"candidate_id {candidate_id} 没有对应的独立报价")
+            continue
+        quote = expected["quote"]
+        target = quote["target"]
+        expected_identity = candidate_id_for(quote["order_id"], target["flight_no"], target["date"])
+        if candidate_id != expected_identity:
+            errors.append(f"candidate_id {candidate_id} 不是确定性候选标识")
+        embedded = option.get("quote")
+        if embedded is not None and embedded != quote:
+            errors.append(f"candidate_id {candidate_id} 的内嵌报价与独立报价不一致")
+
+        expected_total = quote["total"]
+        actual_total = option.get("total")
+        matched = actual_total == expected_total
+        fee_comparison.append({"candidate_id": candidate_id, "expected": expected_total,
+                               "actual": actual_total, "matched": matched})
+        if not matched:
+            amount_errors.append(f"candidate_id {candidate_id} 合计应为{expected_total}元，实际写了{actual_total}元")
+        if expected_total != quote["change_fee"] + quote["fare_diff"]:
+            amount_errors.append(f"candidate_id {candidate_id} 的独立报价费用合计不一致")
+        if option.get("target") != target:
+            amount_errors.append(f"candidate_id {candidate_id} 的目标航班或票价与报价不一致")
+        if option.get("fee_items") != expected["fee_items"]:
+            amount_errors.append(f"candidate_id {candidate_id} 的费用明细与报价不一致")
+        if option.get("recommended") != expected["recommended"] or option.get("rank") != expected["rank"]:
+            errors.append(f"candidate_id {candidate_id} 的推荐标记或排名不一致")
+        if option.get("rule_refs") != expected["rule_refs"]:
+            bad_refs.extend(ref for ref in option.get("rule_refs", []) if ref not in expected["rule_refs"])
+            errors.append(f"candidate_id {candidate_id} 的规则引用与报价不一致")
+
+        rationale = option.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            unsupported.append(f"candidate_id {candidate_id} 缺少推荐理由")
+            errors.append(f"candidate_id {candidate_id} 缺少推荐理由")
+            continue
+        unit = {"text": _norm(rationale),
+                "results": [{"intent": "CHANGE", "fee": quote, "rules": []}],
+                "options": [option]}
+        current_errors, current_bad = _check_amounts(unit)
+        amount_errors.extend(f"candidate_id {candidate_id}：{error}" for error in current_errors)
+        bad_quotes.extend(current_bad)
+        if rationale != expected["rationale"]:
+            unsupported.append(rationale)
+            errors.append(f"candidate_id {candidate_id} 的推荐理由偏离已校验报价事实")
+
+    quote_mismatch = bool(amount_errors)
+    errors = amount_errors + errors
+    threshold = _threshold()
+    confidence = 0.0 if errors else 1.0
+    return {"confidence": confidence, "quote_mismatch": quote_mismatch, "bad_quotes": bad_quotes,
+            "unsupported_claims": unsupported, "bad_refs": bad_refs, "errors": errors,
+            "support_ratio": 0.0 if unsupported else 1.0, "threshold": threshold,
+            "fee_comparison": fee_comparison, "passed": not errors}
 
 
 def _threshold():

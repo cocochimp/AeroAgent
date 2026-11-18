@@ -1,4 +1,5 @@
-"""基于 SQLite 业务记录的确定性票务计价。"""
+"""确定性票务计价，包含数据库订单与纯 SmartMock 候选报价。"""
+from collections.abc import Mapping
 from datetime import datetime
 
 from opentelemetry import trace
@@ -29,6 +30,80 @@ def _percentage(amount: int, pct: int) -> int:
 
 def _departure(flight: FlightRecord) -> datetime:
     return datetime.fromisoformat(f"{flight.date}T{flight.dep_time}")
+
+
+MIN_FARE = 1
+MAX_FARE = 100_000
+
+
+def price_change_candidate(order: Mapping, original_flight: Mapping, candidate: Mapping,
+                           rates: Mapping, now: datetime) -> dict:
+    """独立计算一个已校验候选；原票规则决定改期费，目标票价只决定非负差价。
+
+    此函数不读取画像、数据库或全局时钟。除 candidate_id 外，候选快照与原有
+    CHANGE 计价遵守相同的订单状态、航司航线、起飞时间和非自愿规则。
+    """
+    if order.get("status") != "ISSUED":
+        raise PricingError("ORDER_NOT_ISSUED", f"订单状态为 {order.get('status')}，不能办理退改")
+    if not isinstance(rates, Mapping) or "change" not in rates:
+        raise PricingError("DATA_MISSING", f"缺少费率表：{order.get('airline')} {order.get('fare_product')}")
+    candidate_id = candidate.get("candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id:
+        raise PricingError("CANDIDATE_ID_REQUIRED", "SmartMock 候选缺少 candidate_id")
+    if (candidate.get("origin"), candidate.get("dest")) != (
+            original_flight.get("origin"), original_flight.get("dest")) or \
+            candidate.get("airline") != order.get("airline"):
+        raise PricingError("NO_TARGET_FLIGHT", f"{candidate.get('date')} 没有可改签的航班")
+    if candidate.get("flight_no") == order.get("flight_no") and candidate.get("date") == order.get("date"):
+        raise PricingError("SAME_FLIGHT", "改签目标与原航班相同")
+    try:
+        target_departure = datetime.fromisoformat(f"{candidate['date']}T{candidate['dep_time']}")
+        original_departure = datetime.fromisoformat(
+            f"{original_flight['date']}T{original_flight['dep_time']}")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PricingError("TARGET_UNAVAILABLE", "目标航班日期或时间无效") from exc
+    if candidate.get("status") == "cancelled" or target_departure <= now:
+        raise PricingError("TARGET_UNAVAILABLE", f"{candidate.get('flight_no')} {candidate.get('date')} 不可改签")
+
+    fare_product = candidate.get("fare_product")
+    cabin = candidate.get("cabin")
+    if fare_product not in seed.PRODUCTS or seed.PRODUCTS[fare_product][0] != cabin:
+        raise PricingError("INVALID_FARE_PRODUCT", "目标舱位与票价产品不匹配")
+    fares = candidate.get("fares") or {}
+    target_fare = fares.get(fare_product)
+    if target_fare is None and candidate.get("fare_product") == fare_product:
+        target_fare = candidate.get("fare")
+    if type(target_fare) is not int or not MIN_FARE <= target_fare <= MAX_FARE:
+        raise PricingError("DATA_MISSING", f"目标航班缺少有效的 {fare_product} 票价")
+
+    hours = (original_departure - now).total_seconds() / 3600
+    window = "after" if hours < 0 else "lt4" if hours < 4 else "h4" if hours < 48 else "h48" if hours < 168 else "d7"
+    involuntary = ("GEN-CANCEL" if original_flight.get("status") == "cancelled" else
+                   "GEN-DELAY" if original_flight.get("status") == "delayed" and
+                   original_flight.get("delay_min", 0) >= 120 else None)
+    fare, tax = order["fare"], order["tax"]
+    target = {"flight_no": candidate["flight_no"], "date": candidate["date"],
+              "dep_time": candidate["dep_time"], "airline": candidate["airline"],
+              "origin": candidate["origin"], "dest": candidate["dest"], "cabin": cabin,
+              "fare_product": fare_product, "fare": target_fare}
+    base = {"order_id": order["order_id"], "candidate_id": candidate_id, "action": "CHANGE",
+            "currency": "CNY", "fare": fare, "tax": tax, "window": window,
+            "window_label": seed.WINDOW_LABEL[window], "involuntary": bool(involuntary),
+            "flight_status": original_flight["status"], "delay_min": original_flight.get("delay_min", 0),
+            "allowed": True, "reason": "", "rate_pct": 0, "target": target}
+    if involuntary:
+        return {**base, "rule_id": involuntary, "change_fee": 0, "fare_diff": 0, "total": 0,
+                "reason": "非自愿改签，免改期费、免差价"}
+    percentages = rates["change"]
+    rule_id = f"{order['airline']}-{order['fare_product']}-CHG"
+    if percentages is None:
+        return {**base, "rule_id": rule_id, "allowed": False, "change_fee": 0, "fare_diff": 0,
+                "total": 0, "reason": "该票价产品不得自愿改签"}
+    pct = percentages[seed.WINDOWS.index(window)]
+    change_fee = _percentage(fare, pct)
+    fare_diff = max(0, target_fare - fare)
+    return {**base, "rule_id": rule_id, "rate_pct": pct, "change_fee": change_fee,
+            "fare_diff": fare_diff, "total": change_fee + fare_diff}
 
 
 async def calculate(session: AsyncSession, order_id: str, action: str,

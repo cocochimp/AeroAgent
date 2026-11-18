@@ -1,4 +1,7 @@
 """方案生成：模板（规则模式）或 LLM（DeepSeek 模式）。金额一律回填引擎结果。"""
+from collections.abc import Mapping, Sequence
+import copy
+
 from app.adapters.outbound.sqlite import data
 from app.application.agents.models import FeeItem, SchemeOption, SchemeOutput
 
@@ -74,3 +77,72 @@ def ensure_fee_rule(result: dict) -> dict:
         return result
     rule = data.get_rule(fee["rule_id"])
     return {**result, "rules": [rule] + list(rules)} if rule else result
+
+
+def _profile_products(profile: Mapping | None) -> Mapping:
+    data = (profile or {}).get("data") or {}
+    products = data.get("products") or {}
+    return products if isinstance(products, Mapping) else {}
+
+
+def _product_weight(products: Mapping, fare_product: str) -> float:
+    value = products.get(fare_product, 0)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
+def _candidate_rationale(quote: Mapping, cheapest: int, preferred: bool, price_sensitive: bool) -> str:
+    """Compose reasons solely from quote fields and explicit profile preferences."""
+    target = quote["target"]
+    parts = [f"{target['date']} {target['dep_time']} 起飞，{target['cabin']}舱/{target['fare_product']}；"
+             f"改期费{quote['change_fee']}元，票面差价{quote['fare_diff']}元，合计{quote['total']}元。"]
+    if preferred:
+        parts.append(f"符合画像中的 {target['fare_product']} 票种偏好。")
+    if quote["total"] == cheapest:
+        parts.append("本候选合计最低，符合高价格敏感度偏好。" if price_sensitive else "本候选合计最低。")
+    return "".join(parts)
+
+
+def generate_change_options(quotes: Sequence[Mapping], profile: Mapping | None = None) -> list[dict]:
+    """Rank independently priced candidates; never forward provider-written reasons.
+
+    High price sensitivity puts total first. Otherwise an explicit fare-product
+    preference is primary and total breaks ties. Every final key is deterministic.
+    The returned quote is a deep copy so ranking or presentation cannot mutate it.
+    """
+    if not 2 <= len(quotes) <= 5:
+        raise ValueError("SmartMock 改签报价必须为 2–5 个")
+    products = _profile_products(profile)
+    price_sensitive = ((profile or {}).get("data") or {}).get("price_sensitivity") == "高"
+
+    def sort_key(quote):
+        target = quote["target"]
+        preference = _product_weight(products, target["fare_product"])
+        common = (target["date"], target["dep_time"], quote["candidate_id"])
+        return ((quote["total"], -preference, *common) if price_sensitive else
+                (-preference, quote["total"], *common))
+
+    ranked = sorted(quotes, key=sort_key)
+    cheapest = min(quote["total"] for quote in ranked)
+    options = []
+    for rank, source in enumerate(ranked, start=1):
+        quote = copy.deepcopy(source)
+        target = copy.deepcopy(quote["target"])
+        preferred = _product_weight(products, target["fare_product"]) > 0
+        rationale = _candidate_rationale(quote, cheapest, preferred, price_sensitive)
+        options.append({
+            "candidate_id": quote["candidate_id"],
+            "type": "CHANGE",
+            "title": (f"改签至 {target['date']} {target['flight_no']}"
+                      f"（{target['dep_time']}，{target['cabin']}舱/{target['fare_product']}）"),
+            "allowed": quote["allowed"],
+            "target": target,
+            "fee_items": [{"name": "改期费", "amount": quote["change_fee"]},
+                          {"name": "票面差价", "amount": quote["fare_diff"]}],
+            "total": quote["total"],
+            "rule_refs": [quote["rule_id"]],
+            "rationale": rationale,
+            "recommended": rank == 1,
+            "rank": rank,
+            "quote": quote,
+        })
+    return options
