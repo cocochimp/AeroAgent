@@ -1,0 +1,5 @@
+# AeroAgent 业务工具层：向宿主注册退改签只读工具
+- insert:
+    - id: aeroagent-tools
+      name: dsh-plugin-aeroagent
+      inject: [tools]

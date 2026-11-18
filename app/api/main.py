@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
-from app.adapters.inbound.http import admin, cases, health, orders
+from app.adapters.inbound.http import admin, cases, health, openai_compat, orders
 from app.adapters.inbound.http.errors import validation_error_handler
 from app.adapters.outbound.postgres.database import SessionFactory, engine, initialize_schema
 from app.adapters.outbound.postgres.seed import seed_demo_data
@@ -60,6 +60,7 @@ app.include_router(cases.router)
 app.include_router(orders.router)
 app.include_router(admin.router)
 app.include_router(health.router)
+app.include_router(openai_compat.router)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 
