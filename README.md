@@ -17,6 +17,9 @@ AeroAgent 是面向机票退改签场景的垂直 Agent：以 LangGraph 编排�
 - **零 key 同通道运行**：mock 与 DeepSeek 实现同一决策接口，默认无需密钥即可跑通完整退改链路。
 - **lite 本地运行**：SQLite、进程内队列和本地向量检索随单进程启动，无需额外中间件。
 
+<img width="1325" height="793" alt="cb1fbd96a6119eeb45a9353fcc206e15" src="https://github.com/user-attachments/assets/4569b87b-1c05-4add-a1a8-2ca6e36df139" />
+
+
 ## 技术栈
 
 | 层次 | 技术 | 用途 |
