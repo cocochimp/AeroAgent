@@ -6,31 +6,7 @@ AeroAgent 是面向机票退改签场景的垂直 Agent：以 LangGraph 编排�
 
 ## 架构总览
 
-```mermaid
-flowchart TD
-    Desktop["Electron 桌面壳"] --> Web["React 工作台"]
-    Web -->|"REST / SSE"| API["FastAPI"]
-    API --> Queue["进程内队列"]
-    Queue --> Main["MainServiceAgent<br/>主服务 Agent"]
-    Main --> Advisor["ServicingAdvisorAgent<br/>方案 Agent"]
-    Advisor --> Tools["只读工具<br/>flight_status / rule_retrieve / recalc_fee"]
-    Tools --> Retrieval["本地混合检索<br/>BGE + BM25 + RRF + 精排"]
-    Advisor --> Quote["报价与人工确认"]
-    Quote -->|"乘客明确确认"| Transaction["TicketTransactionAgent<br/>交易 Agent"]
-    Transaction --> Airline["Airline Adapter<br/>默认 mock"]
-    Decision["DecisionEngine<br/>mock / DeepSeek 可插拔"] -.-> Main
-    Decision -.-> Advisor
-    Main --> DB[("SQLite<br/>var/aeroagent.db")]
-    Quote --> DB
-    Transaction --> DB
-    API -->|"事件与状态查询"| DB
-
-    subgraph Lite["lite 本地底座"]
-        Queue
-        Retrieval
-        DB
-    end
-```
+<img width="4536" height="3224" alt="agent (1)" src="https://github.com/user-attachments/assets/5f58f61a-890b-4012-9c46-1fe54d7f2c2c" />
 
 ## 核心亮点
 
