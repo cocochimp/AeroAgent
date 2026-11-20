@@ -168,6 +168,22 @@ DSH 验收清单见 [`docs/demo-script.md`](docs/demo-script.md)。
 - [演示脚本](docs/demo-script.md)
 - [运行手册](docs/runbook.md)
 
+## 版本历史
+
+| Tag | 状态 | 代码形态 | 说明 |
+|---|---|---|---|
+| [`v1.0.0`](https://github.com/cocochimp/AeroAgent/tree/v1.0.0) | legacy（冻结） | `air_agent/` + `app.py` + 静态 `web/`（LangGraph MVP） | AeroAgent 1.0 最终状态，仅用于复盘与回溯部署 |
+| `master` | 开发中 | `app/` + `plugin/`（DSH 前台 + 业务大脑） | 当前主线，持续迭代 |
+
+回溯部署旧版（默认 offline 规则模式，无需 LLM Key）：
+
+```bash
+git worktree add ../AeroAgent-v1.0 v1.0.0
+cd ../AeroAgent-v1.0 && ./start.sh    # http://127.0.0.1:8770
+```
+
+旧版需要 `uv` 与 Python ≥3.13；1.0 的代码与 33 条提交历史来自原 `AeroAgent1.0` 仓库，已随 `v1.0.0` tag 归档进本仓库。`v1.0.0` 已被旧版占用，后续正式版本从 `v2.0.0` 起。
+
 ## License
 
 [MIT](LICENSE)
