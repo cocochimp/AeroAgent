@@ -4,7 +4,7 @@ Revision ID: 0001_initial
 """
 from alembic import op
 
-from app.adapters.outbound.postgres.models import Base
+from app.adapters.outbound.persistence.models import Base
 
 revision = "0001_initial"
 down_revision = None

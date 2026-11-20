@@ -6,7 +6,7 @@ import pytest
 from app.adapters.outbound.sqlite import data
 from app import config as settings
 from app.adapters.outbound.sqlite.runtime_projection import sync_agent_projection
-from app.adapters.outbound.postgres.models import FeeRuleRecord, FlightRecord, OrderRecord, ProfileRecord, RuleRecord
+from app.adapters.outbound.persistence.models import FeeRuleRecord, FlightRecord, OrderRecord, ProfileRecord, RuleRecord
 
 
 class FakeSession:
@@ -149,7 +149,7 @@ def test_start_evaluation_binds_selected_cases_to_persisted_version(monkeypatch)
     from datetime import datetime, timezone
     from app.adapters.inbound.http import admin
     from app.adapters.inbound.http.auth import Principal
-    from app.adapters.outbound.postgres.models import EvaluationCaseSetRecord, EvaluationRunRecord
+    from app.adapters.outbound.persistence.models import EvaluationCaseSetRecord, EvaluationRunRecord
     cases = [{"id": "a", "question": "退票", "expect": {"outcome": "ANSWER"}},
              {"id": "b", "question": "改签", "expect": {"outcome": "ANSWER"}}]
     case_set = SimpleNamespace(version="v2", cases=cases, created_at=datetime.now(timezone.utc))

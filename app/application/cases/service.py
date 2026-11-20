@@ -9,8 +9,8 @@ from sqlalchemy import select, update
 from app.application.agents.main_agent import MainServiceAgent
 from app.application.agents.llm import LLMError
 
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import (
     AuditRecord,
     CaseEventRecord,
     OperationRecord,
@@ -20,7 +20,7 @@ from app.adapters.outbound.postgres.models import (
     QuoteRecord,
     ServiceCaseRecord,
 )
-from app.adapters.outbound.redis.streams import Streams
+from app.adapters.outbound.messaging.streams import Streams
 from app.adapters.outbound.sqlite.runtime_projection import (persist_agent_profile, sync_agent_projection)
 from app.application.pricing import PricingError, calculate
 from app.domain.pricing.price_review import (
@@ -330,7 +330,7 @@ async def create_confirmed_operation(quote_id: str, user_id: str, confirmation_i
                    QuoteRecord.status == "OFFERED")
             .values(status="CANCELLED"))
         session.add(OperationRecord(**operation))
-        from app.adapters.outbound.postgres.models import OutboxRecord
+        from app.adapters.outbound.persistence.models import OutboxRecord
         session.add(OutboxRecord(event_id=f"evt_{uuid.uuid4().hex}", topic="fulfillment.submit",
                                  aggregate_id=operation_id, payload={"operation_id": operation_id,
                                  "idempotency_key": idempotency_key}, created_at=now))

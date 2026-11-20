@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from app.adapters.inbound.http import admin
 from app.adapters.inbound.http.auth import Principal
-from app.adapters.outbound.postgres.models import RuleRecord
+from app.adapters.outbound.persistence.models import RuleRecord
 
 
 class RuleSession:

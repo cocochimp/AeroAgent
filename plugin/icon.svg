@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AeroAgent">
+  <rect width="64" height="64" rx="14" fill="#0B1F3A"/>
+  <path d="M12 34.5 52 15l-14 38-7.6-15.4L12 34.5Z" fill="none" stroke="#7DD3FC" stroke-width="3.2" stroke-linejoin="round"/>
+  <path d="m30.4 37.6 9.8-9.8" stroke="#7DD3FC" stroke-width="3.2" stroke-linecap="round"/>
+</svg>

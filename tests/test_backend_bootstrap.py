@@ -8,21 +8,22 @@ def test_backend_api_imports_without_agent_service_cycle():
         capture_output=True, text=True, check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    assert "机票退改签工作台 API" in completed.stdout
+    assert "AeroAgent API" in completed.stdout
 
 
-def test_versioned_api_has_at_most_sixteen_operations():
+def test_versioned_api_exposes_required_routes():
+    """OpenAPI 必须包含插件依赖的核心路由，避免重构时误删。"""
     completed = subprocess.run(
-        [sys.executable, "-c", "from app.adapters.inbound.http import admin,cases,orders,health; routers=(admin.router,cases.router,orders.router,health.router); print(sum(1 for router in routers for route in router.routes if route.path.startswith('/api/v1') for method in route.methods if method not in {'HEAD','OPTIONS'}))"],
+        [sys.executable, "-c",
+         "from app.api.main import app; print('\\n'.join(sorted(app.openapi()['paths'])))"],
         capture_output=True, text=True, check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    assert int(completed.stdout.strip()) == 16
-
-
-def test_desktop_python_entry_is_covered_by_docstring_gate():
-    from desktop import backend_entry
-    from scripts import check_docstrings
-
-    assert "desktop" in check_docstrings.TARGETS
-    assert backend_entry.main.__doc__
+    paths = set(completed.stdout.splitlines())
+    required = {"/api/v1/meta", "/api/v1/orders", "/api/v1/orders/{order_id}",
+                "/api/v1/cases", "/api/v1/cases/{case_id}", "/api/v1/cases/{case_id}/messages",
+                "/api/v1/cases/{case_id}/cancel", "/api/v1/cases/{case_id}/events",
+                "/api/v1/quotes/{quote_id}/confirm", "/api/v1/operations/{operation_id}",
+                "/api/v1/operations/{operation_id}/reconcile", "/api/v1/admin/mock",
+                "/api/v1/health"}
+    assert required <= paths, sorted(required - paths)

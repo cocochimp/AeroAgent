@@ -1,21 +1,21 @@
-"""原生 DSH 会话的端到端回归：身份、开案、方案、续办、换票与租户隔离。
+"""原生 DSH 工具链路的端到端回归：开案、方案、续办、换票与租户隔离。
 
-运行在进程内（不访问外网）：决策模式用确定性的 mock，界面契约与真实模式一致。
+不经过 OpenAI 兼容层：插件工具直接调用 /api/v1/cases，和真实 DSH 会话同一条链路。
 """
 import asyncio
-import json
 import re
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.main import app
-from app.adapters.inbound.http import openai_compat as compat
-from app.adapters.outbound.postgres import database
-from app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.persistence import database
+from app.adapters.outbound.persistence.seed import seed_demo_data
 from app.adapters.outbound.sqlite import data
+from app.api.main import app
 
-MARKER = re.compile(r'\[aeroagent-case\]: # "case_id=(case_[0-9a-f]+)(?: user=([A-Za-z0-9_-]+))?"')
+AUTH = {"Authorization": "Bearer demo:u_zhang"}
+AUTH_WANG = {"Authorization": "Bearer demo:u_wang"}
+AUTH_LI = {"Authorization": "Bearer demo:u_li"}
 
 
 def _prepare_database():
@@ -29,152 +29,115 @@ def _prepare_database():
     asyncio.run(prepare())
 
 
-def _chat(client, *messages, model="aeroagent-mock"):
-    response = client.post("/v1/chat/completions", json={
-        "model": model,
-        "messages": [{"role": role, "content": content} for role, content in messages],
-    })
-    return response
+def _start(client, message, order_id, headers=AUTH):
+    response = client.post("/api/v1/cases?wait=true", headers=headers,
+                           json={"message": message, "order_id": order_id})
+    assert response.status_code == 202, response.text
+    return response.json()
 
 
-def _content(response):
-    assert response.status_code == 200, response.text
-    return response.json()["choices"][0]["message"]["content"]
+def _continue(client, case_id, message, headers=AUTH):
+    response = client.post(f"/api/v1/cases/{case_id}/messages?wait=true", headers=headers,
+                           json={"message": message})
+    assert response.status_code == 202, response.text
+    return response.json()
 
 
-def _case_id(content):
-    match = MARKER.search(content)
-    assert match, f"答复缺少案件元数据：{content}"
-    return match.group(1), match.group(2)
+def _text(case):
+    return (case.get("result", {}).get("final") or {}).get("text", "")
 
 
 @pytest.fixture()
 def native():
     _prepare_database()
-    yield TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
-def test_change_quote_for_selected_ticket_is_human_readable(native):
-    """选中客票后直接得到可读的改签方案与真实案件，金额与引擎一致。"""
-    content = _content(_chat(native, ("user", "@ORD20260926010 帮我改签到后天，请生成可选方案，并说明差价和手续费。")))
-    case_id, owner = _case_id(content)
-
-    assert owner == "u_zhang"
-    assert "### 改签方案" in content
-    assert "| 应付合计 |" in content
-    assert "quote_id" not in content and "```" not in content
-    assert content.count("[aeroagent-case]: #") == 1
-    assert "\n\n[aeroagent-case]: #" in content, "元数据必须独立成段，Markdown 才会隐藏"
-
-    case = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_zhang"}).json()
+def test_change_quote_is_structured_and_priced(native):
+    """选中客票后得到可办理改签报价，金额来自确定性费用引擎。"""
+    case = _start(native, "帮我改签到后天，请生成可选方案，并说明差价和手续费。", "ORD20260926010")
     assert case["order_id"] == "ORD20260926010"
     assert case["status"] == "WAITING_CONFIRMATION"
     assert [quote["action"] for quote in case["quotes"]] == ["CHANGE"]
     quote = case["quotes"][0]
     assert quote["amount"] > 0
     assert quote["details"][0]["pricing"]["total"] == quote["amount"]
-    assert f"| 应付合计 | ¥{quote['amount']} |" in content
+    assert "改期费" in _text(case)
 
 
 def test_cancelled_flight_change_is_free(native):
-    """航司取消属于非自愿改签：改期费与差价都必须为 0，而不是随意估价。"""
-    content = _content(_chat(native, ("user", "@ORD20260926007 帮我改签到后天，请生成可选方案。")))
-    case_id, _ = _case_id(content)
-
-    assert "| 应付合计 | ¥0 |" in content
-    case = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_wang"}).json()
+    """航司取消属于非自愿改签：改期费与差价都必须为 0。"""
+    case = _start(native, "帮我改签到后天，请生成可选方案。", "ORD20260926007", AUTH_WANG)
     pricing = case["quotes"][0]["details"][0]["pricing"]
     assert pricing["involuntary"] is True
     assert pricing["change_fee"] == 0 and pricing["fare_diff"] == 0
 
 
 def test_case_is_not_visible_to_another_passenger(native):
-    content = _content(_chat(native, ("user", "@ORD20260926007 帮我改签到后天。")))
-    case_id, _ = _case_id(content)
-
-    denied = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_li"})
+    case = _start(native, "帮我改签到后天。", "ORD20260926007", AUTH_WANG)
+    denied = native.get(f"/api/v1/cases/{case['case_id']}", headers=AUTH_LI)
     assert denied.status_code == 404
 
 
-def test_follow_up_without_ticket_token_resumes_the_same_case(native):
-    first = _content(_chat(native, ("user", "@ORD20260926007 帮我改签到后天，请生成可选方案。")))
-    case_id, _ = _case_id(first)
-
-    second = _content(_chat(native, ("user", "@ORD20260926007 帮我改签到后天，请生成可选方案。"),
-                            ("assistant", first),
-                            ("user", "为什么改期费是这个金额？")))
-    resumed, owner = _case_id(second)
-
-    assert resumed == case_id, "追问必须回到同一个案件"
-    assert owner == "u_wang"
+def test_follow_up_resumes_the_same_case(native):
+    """信息不足时追问，补充后必须回到同一个案件。"""
+    first = _start(native, "帮我改签。", "ORD20260926007", AUTH_WANG)
+    assert first["status"] == "NEEDS_INFORMATION"
+    second = _continue(native, first["case_id"], "2026-09-28", AUTH_WANG)
+    assert second["case_id"] == first["case_id"]
+    assert second["status"] == "WAITING_CONFIRMATION"
 
 
-def test_switching_ticket_starts_a_new_case_for_the_new_ticket(native):
-    first = _content(_chat(native, ("user", "@ORD20260926007 帮我改签到后天，请生成可选方案。")))
-    case_id, _ = _case_id(first)
-
-    second = _content(_chat(native, ("user", "@ORD20260926007 帮我改签到后天。"),
-                            ("assistant", first),
-                            ("user", "@ORD20260926008 这单退票怎么算？")))
-    switched, owner = _case_id(second)
-
-    assert switched != case_id
-    assert owner == "u_wang"
-    fresh = native.get(f"/api/v1/cases/{switched}", headers={"Authorization": "Bearer demo:u_wang"}).json()
-    assert fresh["order_id"] == "ORD20260926008"
+def test_switching_ticket_starts_a_new_case(native):
+    first = _start(native, "帮我改签到后天，请生成可选方案。", "ORD20260926007", AUTH_WANG)
+    second = _start(native, "@ORD20260926008 这单退票怎么算？", "ORD20260926008", AUTH_WANG)
+    assert second["case_id"] != first["case_id"]
+    assert second["order_id"] == "ORD20260926008"
 
 
 def test_refund_request_renders_refund_plan(native):
-    content = _content(_chat(native, ("user", "@ORD20260926008 航班取消了，请按票规计算退票费和最终退款。")))
-    case_id, _ = _case_id(content)
-
-    assert "### 退票方案" in content
-    assert "预计退款" in content
-    case = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_wang"}).json()
+    case = _start(native, "航班取消了，请按票规计算退票费和最终退款。", "ORD20260926008", AUTH_WANG)
     assert case["quotes"][0]["action"] == "REFUND"
     assert case["quotes"][0]["amount"] >= 0
+    assert "退款" in _text(case)
 
 
 def test_unknown_ticket_is_rejected_before_any_case_is_created(native):
-    response = _chat(native, ("user", "@ORD99999999999 帮我改签到后天。"))
+    response = native.post("/api/v1/cases?wait=true", headers=AUTH,
+                           json={"message": "帮我改签到后天。", "order_id": "ORD99999999999"})
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "ORDER_NOT_FOUND"
 
 
 def test_internal_quote_ids_never_reach_the_transcript(native):
-    content = _content(_chat(native, ("user", "@ORD20260926007 帮我改签到后天，请生成可选方案。")))
-    case_id, _ = _case_id(content)
-    case = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_wang"}).json()
-
+    case = _start(native, "帮我改签到后天，请生成可选方案。", "ORD20260926007", AUTH_WANG)
+    text = _text(case)
     for quote in case["quotes"]:
-        assert quote["quote_id"] not in content
-        assert json.dumps(quote, ensure_ascii=False) not in content
+        assert quote["quote_id"] not in text
+
 
 def test_confirmed_quote_runs_the_transaction_to_a_new_ticket(native):
     """确认方案后必须真正走完交易：案件 COMPLETED、报价 EXECUTED、产生新票号。"""
     from app.application.agents.transaction_agent import ConfirmedQuoteCommand, TicketTransactionAgent
 
-    content = _content(_chat(native, ("user", "@ORD20260926010 帮我改签到后天，请生成可选方案。")))
-    case_id, _ = _case_id(content)
-    case = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_zhang"}).json()
+    case = _start(native, "帮我改签到后天，请生成可选方案。", "ORD20260926010")
     quote = case["quotes"][0]
     assert quote["status"] == "OFFERED"
 
     confirmed = native.post(f"/api/v1/quotes/{quote['quote_id']}/confirm",
                             json={"confirmation_id": "confirm-e2e", "idempotency_key": "ticket-e2e"},
-                            headers={"Authorization": "Bearer demo:u_zhang"})
+                            headers=AUTH)
     assert confirmed.status_code == 202, confirmed.text
     operation_id = confirmed.json()["operation_id"]
-
     asyncio.run(TicketTransactionAgent().execute(ConfirmedQuoteCommand(operation_id)))
 
-    done = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_zhang"}).json()
+    done = native.get(f"/api/v1/cases/{case['case_id']}", headers=AUTH).json()
     assert done["status"] == "COMPLETED"
     assert done["result"]["operation"]["status"] == "CHANGED"
     assert done["result"]["operation"]["ticket_no"]
     assert done["quotes"][0]["status"] == "EXECUTED"
-    order = native.get("/api/v1/orders?q=ORD20260926010",
-                       headers={"Authorization": "Bearer demo:u_zhang"}).json()
+    order = native.get("/api/v1/orders?q=ORD20260926010", headers=AUTH).json()
     assert order["orders"][0]["ticket_no"] == done["result"]["operation"]["ticket_no"]
 
 
@@ -182,42 +145,50 @@ def test_confirmation_is_idempotent_for_the_same_key(native):
     """相同幂等键重放不会重复出票，也不会产生第二笔操作。"""
     from app.application.agents.transaction_agent import ConfirmedQuoteCommand, TicketTransactionAgent
 
-    content = _content(_chat(native, ("user", "@ORD20260926008 帮我改签到后天。")))
-    case_id, _ = _case_id(content)
-    case = native.get(f"/api/v1/cases/{case_id}", headers={"Authorization": "Bearer demo:u_wang"}).json()
+    case = _start(native, "帮我改签到后天。", "ORD20260926008", AUTH_WANG)
     if not case["quotes"]:
         pytest.skip("该演示订单不可改签，跳过确认链路")
     quote = case["quotes"][0]
     body = {"confirmation_id": "confirm-replay", "idempotency_key": "ticket-replay"}
-    first = native.post(f"/api/v1/quotes/{quote['quote_id']}/confirm", json=body,
-                        headers={"Authorization": "Bearer demo:u_wang"})
+    first = native.post(f"/api/v1/quotes/{quote['quote_id']}/confirm", json=body, headers=AUTH_WANG)
     assert first.status_code == 202, first.text
     asyncio.run(TicketTransactionAgent().execute(ConfirmedQuoteCommand(first.json()["operation_id"])))
-    replay = native.post(f"/api/v1/quotes/{quote['quote_id']}/confirm", json=body,
-                         headers={"Authorization": "Bearer demo:u_wang"})
+    replay = native.post(f"/api/v1/quotes/{quote['quote_id']}/confirm", json=body, headers=AUTH_WANG)
     assert replay.status_code == 202
     assert replay.json()["operation_id"] == first.json()["operation_id"]
     assert replay.json()["idempotent"] is True
 
 
 def test_listing_booking_can_be_refunded_in_chat(native):
-    """Listing 新下的订单必须能被退改会话识别：这是两个模块之间的真实接缝。"""
-    flight = native.get("/api/v1/flights", headers={"Authorization": "Bearer demo:u_wang"},
+    """Listing 新下的订单必须能被退改会话识别。"""
+    flight = native.get("/api/v1/flights", headers=AUTH_WANG,
                         params={"date": "2026-09-28"}).json()["flights"][0]
-    created = native.post("/api/v1/bookings", headers={"Authorization": "Bearer demo:u_wang"},
+    created = native.post("/api/v1/bookings", headers=AUTH_WANG,
                           json={"flight_no": flight["flight_no"], "date": flight["date"],
                                 "fare_product": "Y", "passenger": "王五"})
     assert created.status_code == 201, created.text
     booking = created.json()
     order_id = booking["order_id"]
     assert re.fullmatch(r"ORD\d{11}", order_id)
-    paid = native.post(f"/api/v1/bookings/{booking['booking_id']}/pay",
-                       headers={"Authorization": "Bearer demo:u_wang"},
+    paid = native.post(f"/api/v1/bookings/{booking['booking_id']}/pay", headers=AUTH_WANG,
                        json={"idempotency_key": "pay-e2e-refund-1"})
     assert paid.status_code == 200, paid.text
     assert paid.json()["status"] == "ISSUED"
 
-    content = _content(_chat(native, ("user", f"@{order_id} 帮我退票，请说明退票费和最终退款。")))
-    _case_id(content)
-    assert "### 退票方案" in content
-    assert "预计退款" in content
+    case = _start(native, "帮我退票，请说明退票费和最终退款。", order_id, AUTH_WANG)
+    assert case["quotes"][0]["action"] == "REFUND"
+    assert "退款" in _text(case)
+
+
+def test_multi_candidate_change_options_are_priced_and_ranked(native):
+    """多方案改签返回 2–5 个候选，独立定价、恰好一个推荐、标识稳定。"""
+    first = native.get("/api/v1/orders/ORD20260926010/change-options?date=2026-09-28", headers=AUTH)
+    assert first.status_code == 200, first.text
+    payload = first.json()
+    assert 2 <= len(payload["options"]) <= 5
+    assert sum(1 for option in payload["options"] if option["recommended"]) == 1
+    assert all(option["total"] >= 0 and option["candidate_id"].startswith("chg_")
+               for option in payload["options"])
+    second = native.get("/api/v1/orders/ORD20260926010/change-options?date=2026-09-28", headers=AUTH).json()
+    assert [option["candidate_id"] for option in second["options"]] == [
+        option["candidate_id"] for option in payload["options"]]

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application import seed
 from app import config as legacy_settings
 
-from app.adapters.outbound.postgres.models import FeeRuleRecord, FlightRecord, OrderRecord
+from app.adapters.outbound.persistence.models import FeeRuleRecord, FlightRecord, OrderRecord
 from app.domain.pricing.price_review import PriceReview, review_confirmed_quote
 
 _tracer = trace.get_tracer("air-ticket.pricing")

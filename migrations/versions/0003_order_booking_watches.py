@@ -5,7 +5,7 @@ Revision ID: 0003_order_booking_watches
 import sqlalchemy as sa
 from alembic import op
 
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.models import (
     BookingAttemptRecord,
     PriceAlertRecord,
     PriceObservationRecord,

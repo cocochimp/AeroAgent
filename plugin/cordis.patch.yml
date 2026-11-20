@@ -1,0 +1,11 @@
+# AeroAgent 业务插件：工具、同源网关与系统提示
+- insert:
+    - id: aeroagent
+      name: dsh-plugin-aeroagent
+      inject: [tools]
+      config:
+        backendUrl: http://127.0.0.1:8000
+        identityMode: demo
+        demoUserId: u_zhang
+        enableAdminTools: false
+        allowedProfiles: [web]

@@ -2,8 +2,8 @@
 import hashlib
 from datetime import timezone
 
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import (
     AuditRecord,
     FlightRecord,
     LedgerRecord,
@@ -41,6 +41,17 @@ async def fulfill_operation(operation_id: str, airline: AirlineGateway) -> dict:
             operation.updated_at = utcnow()
             await session.commit()
             return {"operation_id": operation_id, "status": operation.status}
+        if quote.status == "CANCELLED":
+            # 取消与确认并发时，以报价最终状态为准；不能让已取消报价继续出票。
+            operation.status = "FAILED"
+            operation.response = {"reason": "报价已取消", "code": "QUOTE_CANCELLED"}
+            operation.updated_at = utcnow()
+            case = await session.get(ServiceCaseRecord, quote.case_id, with_for_update=True)
+            if case:
+                case.status, case.updated_at = "CANCELLED", utcnow()
+            await session.commit()
+            await record_case_event(quote.case_id, "fulfillment.cancelled", operation.response)
+            return {"operation_id": operation_id, "status": "FAILED", "reason": "报价已取消"}
         if not quote.confirmed_at or not quote.confirmation_id:
             operation.status = "FAILED"
             operation.response = {"reason": "报价尚未获得旅客确认"}
@@ -103,6 +114,11 @@ async def fulfill_operation(operation_id: str, airline: AirlineGateway) -> dict:
         supplier_result = {"status": "TIMEOUT", "code": "SUPPLIER_TIMEOUT",
                            "message": str(exc) or "航司响应超时，办理结果待核对", "retryable": True}
 
+    return await settle_operation(operation_id, supplier_result)
+
+
+async def settle_operation(operation_id: str, supplier_result: dict) -> dict:
+    """把航司最终结果落到订单、账本、报价与案件；提交与对账共用同一收口。"""
     if supplier_result.get("status") != "ACCEPTED":
         async with SessionFactory() as session:
             operation = await session.get(OperationRecord, operation_id, with_for_update=True)
@@ -110,13 +126,13 @@ async def fulfill_operation(operation_id: str, airline: AirlineGateway) -> dict:
             now = utcnow()
             rejected = supplier_result.get("status") == "REJECTED"
             operation.status = "FAILED" if rejected else "RESULT_UNKNOWN"
-            operation.response = supplier_result
+            operation.response = {"operation_id": operation_id, **supplier_result}
             operation.updated_at = now
             case = await session.get(ServiceCaseRecord, quote.case_id, with_for_update=True)
             if case:
                 case.status = "HUMAN_REVIEW" if rejected else "RESULT_UNKNOWN"
                 case.updated_at = now
-                case.result = {**case.result, "operation": supplier_result}
+                case.result = {**case.result, "operation": {"operation_id": operation_id, **supplier_result}}
             await session.commit()
         event_type = "fulfillment.rejected" if rejected else "fulfillment.result_unknown"
         await record_case_event(quote.case_id, event_type, {"operation_id": operation_id, **supplier_result})
@@ -134,13 +150,13 @@ async def fulfill_operation(operation_id: str, airline: AirlineGateway) -> dict:
         variance = operation.request["platform_variance"]
         if quote.action == "CHANGE":
             target = current["target"]
-            ticket_no = _ticket_no(operation.idempotency_key, target["flight_no"])
+            ticket_no = supplier_result.get("ticket_no") or _ticket_no(operation.idempotency_key, target["flight_no"])
             order.flight_no, order.date = target["flight_no"], target["date"]
             order.fare, order.status, order.ticket_no = max(order.fare, target["fare"]), "CHANGED", ticket_no
             airline_amount = -current["total"]
             customer_posting = customer_amount
             platform_posting = variance
-            result = {"status": "CHANGED", "ticket_no": ticket_no, "target": target,
+            result = {"operation_id": operation_id, "status": "CHANGED", "ticket_no": ticket_no, "target": target,
                       "customer_amount": customer_amount, "platform_variance": variance}
         else:
             order.status = "REFUNDED"
@@ -148,7 +164,7 @@ async def fulfill_operation(operation_id: str, airline: AirlineGateway) -> dict:
             airline_amount = customer_amount
             customer_posting = -customer_amount
             platform_posting = 0
-            result = {"status": "REFUNDED", "ticket_no": ticket_no,
+            result = {"operation_id": operation_id, "status": "REFUNDED", "ticket_no": ticket_no,
                       "customer_amount": customer_amount, "platform_variance": 0}
         if customer_posting:
             session.add(LedgerRecord(entry_id=f"led_{operation_id}_customer", operation_id=operation_id,

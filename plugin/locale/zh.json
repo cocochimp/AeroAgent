@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "AeroAgent 机票退改",
+    "description": "在 DSH 内完成订单查询、改签/退票报价、人工确认、航班预订、低价监控与执行观测。",
+    "detail": "docs/DETAIL.md"
+  }
+}

@@ -1,18 +1,20 @@
 """面向乘客的客服案件与报价确认 API。"""
+import asyncio
+import hashlib
 import json
 import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.application.agents import orchestrator as legacy_graph
 
 from app.adapters.inbound.http.auth import Principal, get_principal
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import (CaseEventRecord, OrderRecord, OutboxRecord,
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import (CaseEventRecord, OrderRecord, OutboxRecord,
                                                            QuoteRecord, ServiceCaseRecord)
-from app.adapters.outbound.redis.streams import Streams
+from app.adapters.outbound.messaging.streams import Streams
 from app.application.cases.service import (
     create_confirmed_operation,
     create_requote,
@@ -49,6 +51,7 @@ class CaseCreateRequest(StrictModel):
     """约束新建案件的初始诉求和可选订单；订单归属在路由中核验。"""
     message: str = Field(min_length=1, max_length=2000)
     order_id: str | None = Field(default=None, min_length=3, max_length=64)
+    client_request_id: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class CaseMessageRequest(StrictModel):
@@ -74,6 +77,32 @@ async def _owned_case(case_id: str, user_id: str) -> ServiceCaseRecord:
         return case
 
 
+async def _cancel_waiting_case(case_id: str, quote_id: str) -> list[str]:
+    """以条件更新取消待确认案件；确认与取消并发时只有一个能成功。"""
+    now = utcnow()
+    async with SessionFactory() as session:
+        case_update = await session.execute(update(ServiceCaseRecord).where(
+            ServiceCaseRecord.case_id == case_id,
+            ServiceCaseRecord.status == "WAITING_CONFIRMATION",
+            ServiceCaseRecord.current_quote_id == quote_id,
+        ).values(status="CANCELLED", updated_at=now))
+        if case_update.rowcount != 1:
+            await session.rollback()
+            raise _http_error("CANCELLATION_REJECTED", "该报价已进入办理流程，无法取消", 409)
+        quote_update = await session.execute(update(QuoteRecord).where(
+            QuoteRecord.case_id == case_id,
+            QuoteRecord.status.in_(["OFFERED", "REQUOTE_REQUIRED"]),
+        ).values(status="CANCELLED"))
+        if quote_update.rowcount == 0:
+            await session.rollback()
+            raise _http_error("CANCELLATION_REJECTED", "当前没有可取消的报价", 409)
+        rows = list(await session.scalars(select(QuoteRecord.quote_id).where(
+            QuoteRecord.case_id == case_id, QuoteRecord.status == "CANCELLED")))
+        quote_ids = [getattr(row, "quote_id", row) for row in rows]
+        await session.commit()
+    return quote_ids
+
+
 def _case_outbox(session, payload: dict) -> str:
     event_id = f"evt_{uuid.uuid4().hex}"
     session.add(OutboxRecord(event_id=event_id, topic="case.turn", aggregate_id=payload["case_id"],
@@ -81,12 +110,39 @@ def _case_outbox(session, payload: dict) -> str:
     return event_id
 
 
+async def _wait_case(case_id: str, user_id: str, timeout_seconds: float = 45.0) -> dict:
+    """轮询到案件离开 OPEN/PROCESSING；超时仍返回当前快照，由调用方继续查询。"""
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        async with SessionFactory() as session:
+            case = await session.get(ServiceCaseRecord, case_id)
+            if case is None or case.user_id != user_id:
+                raise _http_error("NOT_FOUND", "案件不存在", 404)
+            if case.status not in {"OPEN", "PROCESSING"}:
+                return await _case_payload(session, case)
+        if asyncio.get_running_loop().time() >= deadline:
+            async with SessionFactory() as session:
+                case = await session.get(ServiceCaseRecord, case_id)
+                if case is None:
+                    raise _http_error("NOT_FOUND", "案件不存在", 404)
+                return await _case_payload(session, case)
+        await asyncio.sleep(0.15)
+
+
 @router.post("/cases", status_code=status.HTTP_202_ACCEPTED)
-async def create_case(request: CaseCreateRequest, principal: Principal = Depends(get_principal)):
-    """创建属于当前用户的案件并排队首轮处理；案件与 Outbox 同事务提交。"""
+async def create_case(request: CaseCreateRequest, principal: Principal = Depends(get_principal),
+                      wait: bool = Query(default=False)):
+    """创建属于当前用户的案件并排队首轮处理；可等待到可交互终态。"""
     now = utcnow()
-    session_id, case_id = f"s_{uuid.uuid4().hex}", f"case_{uuid.uuid4().hex}"
+    session_id = (f"s_{hashlib.sha256(f'{principal.user_id}:{request.client_request_id}'.encode()).hexdigest()[:32]}"
+                  if request.client_request_id else f"s_{uuid.uuid4().hex}")
+    case_id = f"case_{uuid.uuid4().hex}"
     async with SessionFactory() as session:
+        if request.client_request_id:
+            existing = await session.scalar(select(ServiceCaseRecord).where(
+                ServiceCaseRecord.session_id == session_id))
+            if existing is not None:
+                return {**await _case_payload(session, existing), "deduplicated": True}
         if request.order_id:
             order = await session.get(OrderRecord, request.order_id)
             if order is None or order.user_id != principal.user_id:
@@ -100,6 +156,8 @@ async def create_case(request: CaseCreateRequest, principal: Principal = Depends
                                          "user_id": principal.user_id, "message": request.message,
                                          "order_id": request.order_id})
         await session.commit()
+    if wait:
+        return await _wait_case(case_id, principal.user_id)
     return {"case_id": case_id, "status": "OPEN", "task_id": task_id}
 
 
@@ -112,6 +170,22 @@ async def _case_payload(session, case: ServiceCaseRecord) -> dict:
             "result": case.result, "quotes": [{"quote_id": q.quote_id, "action": q.action,
             "amount": q.amount, "currency": q.currency, "status": q.status,
             "expires_at": q.expires_at, "details": q.details} for q in quotes]}
+
+
+@router.get("/cases")
+async def list_cases(principal: Principal = Depends(get_principal),
+                     limit: int = Query(default=20, ge=1, le=100),
+                     offset: int = Query(default=0, ge=0)):
+    """列出当前用户案件摘要，按最近更新倒序。"""
+    async with SessionFactory() as session:
+        rows = list(await session.scalars(select(ServiceCaseRecord)
+                                          .where(ServiceCaseRecord.user_id == principal.user_id)
+                                          .order_by(ServiceCaseRecord.updated_at.desc())
+                                          .limit(limit).offset(offset)))
+        return {"cases": [{"case_id": case.case_id, "order_id": case.order_id,
+                           "status": case.status, "intent": case.intent,
+                           "created_at": case.created_at, "updated_at": case.updated_at}
+                          for case in rows], "limit": limit, "offset": offset}
 
 
 @router.get("/cases/latest")
@@ -138,7 +212,8 @@ async def get_case(case_id: str, principal: Principal = Depends(get_principal)):
 
 @router.post("/cases/{case_id}/messages", status_code=status.HTTP_202_ACCEPTED)
 async def add_case_message(case_id: str, request: CaseMessageRequest,
-                           principal: Principal = Depends(get_principal)):
+                           principal: Principal = Depends(get_principal),
+                           wait: bool = Query(default=False)):
     """追加对话或恢复待追问会话；待确认阶段只允许显式取消或通过确认接口办理。"""
     case = await _owned_case(case_id, principal.user_id)
     pending = legacy_graph.pending_interrupt(case.session_id)
@@ -146,34 +221,42 @@ async def add_case_message(case_id: str, request: CaseMessageRequest,
         if is_cancel_request(request.message):
             if not case.current_quote_id:
                 raise _http_error("CANCELLATION_REJECTED", "当前没有可取消的报价", 409)
-            async with SessionFactory() as session:
-                quote = await session.get(QuoteRecord, case.current_quote_id, with_for_update=True)
-                current_case = await session.get(ServiceCaseRecord, case_id, with_for_update=True)
-                if quote is None or quote.status not in {"OFFERED", "REQUOTE_REQUIRED"}:
-                    raise _http_error("CANCELLATION_REJECTED", "该报价已进入办理流程，无法取消", 409)
-                offered = list(await session.scalars(select(QuoteRecord).where(
-                    QuoteRecord.case_id == case_id,
-                    QuoteRecord.status.in_(["OFFERED", "REQUOTE_REQUIRED"]))))
-                for offered_quote in offered:
-                    offered_quote.status = "CANCELLED"
-                if current_case:
-                    current_case.status = "CANCELLED"
-                    current_case.updated_at = utcnow()
-                await session.commit()
-            quote_ids = [item.quote_id for item in offered]
+            quote_ids = await _cancel_waiting_case(case_id, case.current_quote_id)
             await record_case_event(case_id, "case.cancelled", {"quote_id": case.current_quote_id,
                                                                  "quote_ids": quote_ids})
             return {"case_id": case_id, "status": "CANCELLED", "quote_id": case.current_quote_id,
                     "quote_ids": quote_ids}
         raise _http_error("CONFIRMATION_REQUIRED", "请使用报价确认接口办理已报价方案", 409)
+    if case.status == "PROCESSING":
+        raise _http_error("CASE_BUSY", "上一轮仍在处理中，请稍后再试", 409)
+    if case.status in {"CANCELLED", "COMPLETED"}:
+        raise _http_error("CASE_CLOSED", "案件已结束，请创建新案件", 409)
     payload = {"case_id": case.case_id, "session_id": case.session_id,
                "user_id": principal.user_id, "message": request.message, "order_id": case.order_id}
     if pending:
         payload["resume_payload"] = {"value": request.message}
     async with SessionFactory() as session:
         task_id = _case_outbox(session, payload)
+        current = await session.get(ServiceCaseRecord, case_id, with_for_update=True)
+        if current is not None:
+            current.status, current.updated_at = "PROCESSING", utcnow()
         await session.commit()
+    if wait:
+        return await _wait_case(case_id, principal.user_id)
     return {"case_id": case_id, "status": "PROCESSING", "task_id": task_id}
+
+
+@router.post("/cases/{case_id}/cancel")
+async def cancel_case(case_id: str, principal: Principal = Depends(get_principal)):
+    """显式取消待确认案件；已进入办理流程的报价拒绝取消。"""
+    case = await _owned_case(case_id, principal.user_id)
+    if case.status != "WAITING_CONFIRMATION" or not case.current_quote_id:
+        raise _http_error("CANCELLATION_REJECTED", "当前案件没有可取消的报价", 409)
+    quote_ids = await _cancel_waiting_case(case_id, case.current_quote_id)
+    await record_case_event(case_id, "case.cancelled", {"quote_id": case.current_quote_id,
+                                                         "quote_ids": quote_ids})
+    return {"case_id": case_id, "status": "CANCELLED", "quote_id": case.current_quote_id,
+            "quote_ids": quote_ids}
 
 
 @router.get("/cases/{case_id}/events")

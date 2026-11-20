@@ -1,6 +1,6 @@
 # FastAPI v1 接口
 
-当前 DDD 应用开放 **25 个 method/path**。接口按用途合并在既有资源路由中，未新增独立 Trace、评测运行详情或数据管理路径。
+当前 DDD 应用开放 **30 个 path、34 个 method/path 组合**。接口按用途合并在既有资源路由中；插件通过 DSH 同源网关访问这些接口。
 
 | # | 方法 | 路径 | 用途 |
 |---:|---|---|---|
@@ -29,10 +29,19 @@
 | 23 | POST | `/api/v1/watches/{watch_id}/evaluate` | 立即写入一次 `manual` 价格观测并评估阈值 |
 | 24 | GET | `/api/v1/watches/{watch_id}` | 读取自有监控及最近 50 条观测和提醒 |
 | 25 | GET | `/api/v1/cases/latest` | 读取当前用户最近创建的案件，供原生 DSH 会话观测使用 |
+| 26 | GET | `/api/v1/cases` | 列出当前用户案件历史（分页） |
+| 27 | POST | `/api/v1/cases/{case_id}/cancel` | 显式取消待确认案件 |
+| 28 | GET | `/api/v1/orders/{order_id}` | 读取订单详情、退改资格与关联案件 |
+| 29 | GET | `/api/v1/orders/{order_id}/change-options` | 生成 2–5 个独立定价的改签候选 |
+| 30 | GET | `/api/v1/meta` | 版本、演示用户、航司模式与场景 |
+| 31 | GET | `/api/v1/operations/{operation_id}` | 办理状态、航司回执与审计轨迹 |
+| 32 | POST | `/api/v1/operations/{operation_id}/reconcile` | 对 `RESULT_UNKNOWN` 主动对账 |
+| 33 | GET | `/api/v1/admin/mock/scenarios` | 列出仿真航司场景 |
+| 34 | PUT | `/api/v1/admin/mock` | 切换仿真航司场景 |
 
 ## 通用约定
 
-所有业务接口使用 Bearer token。案件、报价、预订和监控按当前 principal 做用户归属校验；他人资源统一返回 404，管理员也不能通过请求参数切换这些资源的所有者。管理员接口和管理员数据命令要求 `admin` role。仅本地/演示环境接受 `demo:u_zhang` 一类演示令牌；共享环境必须关闭 `DEMO_AUTH` 并接入企业身份源与强密钥。
+除 `/api/v1/health` 外，所有业务接口使用 Bearer token。案件、报价、预订和监控按当前 principal 做用户归属校验；他人资源统一返回 404，管理员也不能通过请求参数切换这些资源的所有者。管理员接口和管理员数据命令要求 `admin` role。仅本地/演示环境接受 `demo:u_zhang` 一类演示令牌；共享环境必须关闭 `DEMO_AUTH` 并接入企业身份源与强密钥。
 
 金额均为整数最小展示单位，当前快照币种为 `CNY`；`total = fare + tax`。时间字段序列化为 ISO 8601。请求模型拒绝未知字段，客户端不能注入 `user_id`、价格、币种、订单状态或票号。
 
@@ -70,7 +79,7 @@
 }
 ```
 
-取消航班仍返回，`available=false`、`unavailable_reason=FLIGHT_CANCELLED`，其 fares 也不可用。其他非计划状态为 `FLIGHT_NOT_BOOKABLE`，无票价为 `FARE_UNAVAILABLE`。舱位筛选只返回具有该舱位票价的航班。Listing 不代表实时库存。
+取消航班仍返回，`available=false`、`unavailable_reason=FLIGHT_CANCELLED`，其 fares 也不可用。日期早于业务当天为 `FLIGHT_DEPARTED`；其他非计划状态为 `FLIGHT_NOT_BOOKABLE`，无票价为 `FARE_UNAVAILABLE`。舱位筛选只返回具有该舱位票价的航班。Listing 不代表实时库存。
 
 ## 快照预订与 Mock Payment
 

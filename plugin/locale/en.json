@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "AeroAgent airline servicing",
+    "description": "Search orders, quote changes and refunds, confirm with a human, book flights, watch prices and inspect execution inside DSH.",
+    "detail": "docs/DETAIL.md"
+  }
+}

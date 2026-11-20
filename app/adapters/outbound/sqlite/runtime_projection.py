@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.outbound.sqlite import data
 from app.adapters.outbound import retrieval
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import (
     FeeRuleRecord, FlightRecord, OrderRecord, ProfileRecord, RuleRecord,
 )
 

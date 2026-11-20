@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.adapters.outbound.postgres.models import Base, EvaluationCaseSetRecord, OrderRecord, ProfileRecord
-from app.adapters.outbound.postgres.seed import seed_demo_data
-from app.adapters.outbound.redis import streams as streams_module
-from app.adapters.outbound.redis.streams import Streams
+from app.adapters.outbound.persistence.models import Base, EvaluationCaseSetRecord, OrderRecord, ProfileRecord
+from app.adapters.outbound.persistence.seed import seed_demo_data
+from app.adapters.outbound.messaging import streams as streams_module
+from app.adapters.outbound.messaging.streams import Streams
 
 
 def test_memory_streams_replay_after_cursor_and_close_is_instance_local():

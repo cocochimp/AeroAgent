@@ -8,10 +8,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.adapters.inbound.http.auth import Principal
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.models import (
     AuditRecord, Base, BookingAttemptRecord, FlightRecord, OrderRecord,
 )
-from app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.persistence.seed import seed_demo_data
 
 
 USER = Principal("u_zhang", frozenset({"user"}))
@@ -200,7 +200,7 @@ def test_demo_reset_clears_booking_and_watch_dependents(tmp_path, monkeypatch):
     async def check(api, _, factory, selected, _projections):
         from app.adapters.inbound.http import orders as orders_api
         from app.application import monitoring
-        from app.adapters.outbound.postgres.models import PriceWatchRecord
+        from app.adapters.outbound.persistence.models import PriceWatchRecord
 
         await api.create_booking(api.BookingCreateRequest(**_command(selected)), USER)
         monkeypatch.setattr(monitoring, "SessionFactory", factory)

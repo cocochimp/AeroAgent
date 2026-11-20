@@ -51,12 +51,18 @@ def test_case_cancellation_cancels_every_offered_quote(monkeypatch):
     first = SimpleNamespace(quote_id="q1", status="OFFERED")
     second = SimpleNamespace(quote_id="q2", status="OFFERED")
     current_case = SimpleNamespace(status="WAITING_CONFIRMATION", updated_at=None)
+    class Result:
+        rowcount = 1
     class Session:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return None
         async def get(self, model, key, **kwargs):
             if model.__name__ == "QuoteRecord": return first if key == "q1" else second
             return current_case
+        async def execute(self, _statement):
+            first.status = second.status = "CANCELLED"
+            current_case.status = "CANCELLED"
+            return Result()
         async def scalars(self, _): return [first, second]
         async def commit(self): pass
     events = []
@@ -81,7 +87,7 @@ def test_event_reconnect_delivers_after_cursor_once(monkeypatch):
     from types import SimpleNamespace
     import app.adapters.inbound.http.cases as api
     from app.adapters.inbound.http.auth import Principal
-    from app.adapters.outbound.postgres.models import CaseEventRecord
+    from app.adapters.outbound.persistence.models import CaseEventRecord
     case = SimpleNamespace(case_id="case-1", user_id="u1", status="COMPLETED")
     rows = [SimpleNamespace(id=2, case_id="case-1", event_type="case.trace", stream_id="2-0",
                             payload={"node": "a"}),
@@ -158,7 +164,7 @@ def test_replayed_confirmation_is_idempotent_and_emits_trace_event(monkeypatch):
     import asyncio
     from types import SimpleNamespace
     import app.application.cases.service as service
-    from app.adapters.outbound.postgres.models import QuoteRecord
+    from app.adapters.outbound.persistence.models import QuoteRecord
     quote = SimpleNamespace(quote_id="q1", case_id="case-1", status="CONFIRMED", confirmation_id="confirm-1", amount=300)
     case = SimpleNamespace(case_id="case-1", user_id="u1")
     operation = SimpleNamespace(status="PENDING", operation_id="op-1")
@@ -184,7 +190,7 @@ def test_replayed_confirmed_quote_without_operation_raises_explicit_error(monkey
     import asyncio
     from types import SimpleNamespace
     import app.application.cases.service as service
-    from app.adapters.outbound.postgres.models import QuoteRecord
+    from app.adapters.outbound.persistence.models import QuoteRecord
     quote = SimpleNamespace(quote_id="q1", case_id="case-1", status="CONFIRMED",
                             confirmation_id="confirm-1", amount=300)
     case = SimpleNamespace(case_id="case-1", user_id="u1")

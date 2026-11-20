@@ -4,9 +4,11 @@
 __pycache__
 *.py[cod]
 var
-models
 config.json
-frontend/node_modules
-frontend/dist
+plugin/node_modules
+plugin
+tests
+docs
 .archify
 .superpowers
+.uv-cache

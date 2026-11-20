@@ -8,8 +8,8 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import (
     FlightRecord,
     PriceAlertRecord,
     PriceObservationRecord,

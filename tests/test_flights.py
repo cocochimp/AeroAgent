@@ -4,8 +4,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.adapters.inbound.http.auth import Principal
-from app.adapters.outbound.postgres.models import Base, FlightRecord, OrderRecord
-from app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.persistence.models import Base, FlightRecord, OrderRecord
+from app.adapters.outbound.persistence.seed import seed_demo_data
 
 
 USER = Principal("u_zhang", frozenset({"user"}))

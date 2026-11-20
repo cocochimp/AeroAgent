@@ -5,11 +5,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.adapters.outbound.airline.mock import MockAirlineGateway
-from app.adapters.outbound.postgres import models
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence import models
+from app.adapters.outbound.persistence.models import (
     AirlineReceiptRecord, Base, LedgerRecord, OperationRecord, OrderRecord, QuoteRecord, ServiceCaseRecord,
 )
-from app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.persistence.seed import seed_demo_data
 from app.application import fulfillment
 from app.application.cases import service as case_service
 from app.application.pricing import calculate
@@ -191,5 +191,33 @@ def test_fulfillment_timeout_is_unknown_and_retry_uses_same_operation(tmp_path, 
         async with factory() as session:
             assert (await session.get(OrderRecord, order_id)).status == "REFUNDED"
             assert await session.scalar(select(func.count()).select_from(OperationRecord)) == 1
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_reconcile_resolves_unknown_operation_with_same_key(tmp_path, monkeypatch):
+    """超时进入 RESULT_UNKNOWN 后，对账用同一幂等键查到接受结果并完成结算。"""
+    async def run():
+        from app.adapters.inbound.http import operations as operations_api
+        from app.adapters.inbound.http.auth import Principal
+
+        engine, factory = _factory(tmp_path)
+        await _create_schema(engine)
+        _patch_fulfillment(monkeypatch, factory)
+        operation_id, quote_id, order_id, _, user_id = await _confirmed_operation(factory, "reconcile-key")
+        gateway = MockAirlineGateway(delay_seconds=0, session_factory=factory,
+                                     outcomes={"reconcile-key": ["TIMEOUT", "ACCEPTED"]})
+        unknown = await fulfillment.fulfill_operation(operation_id, gateway)
+        assert unknown["status"] == "RESULT_UNKNOWN"
+
+        monkeypatch.setattr(operations_api, "SessionFactory", factory)
+        monkeypatch.setattr(operations_api, "_gateway", lambda: gateway)
+        result = await operations_api.reconcile_operation(
+            operation_id, Principal(user_id, frozenset({"user"})))
+        assert result["reconciled"] is True
+        assert result["status"] == "REFUNDED"
+        async with factory() as session:
+            assert (await session.get(OperationRecord, operation_id)).status == "SUCCEEDED"
+            assert (await session.get(OrderRecord, order_id)).status == "REFUNDED"
         await engine.dispose()
     asyncio.run(run())

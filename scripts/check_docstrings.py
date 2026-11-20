@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGETS = ("app", "desktop", "migrations", "scripts")
+TARGETS = ("app", "migrations", "scripts")
 ROUTE_DECORATORS = {
     "delete",
     "get",

@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import (
     AuditRecord,
     BookingAttemptRecord,
     FlightRecord,

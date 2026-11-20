@@ -9,11 +9,9 @@ config.json
 .idea/
 .env
 node_modules/
-frontend/dist/
-desktop/build/
-desktop/release/
 .ruff_cache/
 .mypy_cache/
 .archify/
 .superpowers/
 *.tsbuildinfo
+.uv-cache/

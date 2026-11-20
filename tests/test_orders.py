@@ -5,8 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.adapters.inbound.http import orders as api
 from app.adapters.inbound.http.auth import Principal
-from app.adapters.outbound.postgres.models import Base, OrderRecord
-from app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.persistence.models import Base, OrderRecord
+from app.adapters.outbound.persistence.seed import seed_demo_data
 from sqlalchemy import select
 
 
@@ -77,7 +77,7 @@ def test_order_departure_sort_and_pages_are_stable(tmp_path, monkeypatch):
             rows = list(await session.scalars(select(OrderRecord).where(OrderRecord.user_id == USER.user_id)))
             expected = []
             for row in rows:
-                from app.adapters.outbound.postgres.models import FlightRecord
+                from app.adapters.outbound.persistence.models import FlightRecord
                 flight = await session.scalar(select(FlightRecord).where(
                     FlightRecord.flight_no == row.flight_no, FlightRecord.date == row.date))
                 expected.append((row.date, flight.dep_time, row.order_id))

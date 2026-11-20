@@ -18,7 +18,6 @@ DEFAULTS = {
     "mode": "mock",                         # mock | deepseek（offline 为兼容别名）
     "llm": {"base_url": "https://api.deepseek.com", "api_key": "", "model": "deepseek-chat",
             "timeout": 30, "max_calls_per_turn": 24},
-    "compat": {"requests_per_minute": 60},
     "query": {"clarify_threshold": 0.6, "step_back_min_hits": 2},
     "planner": {"max_rounds": 8, "max_tool_retries": 1},
     "retrieval": {"backend": os.environ.get("AIR_RETRIEVAL", "hybrid"),   # hybrid | fallback
@@ -30,6 +29,8 @@ DEFAULTS = {
                "budget_share": {"system": 0.15, "order": 0.15, "rules": 0.4,
                                 "history": 0.2, "profile": 0.1}},
     "verify": {"threshold": 0.85, "max_retries": 1},
+    "airline": {"mode": "mock", "scenario": "normal", "base_url": "", "timeout": 5,
+                "auth_header": "", "cassette_dir": "demo_data/cassettes"},
 }
 
 _lock = threading.Lock()
@@ -81,8 +82,6 @@ def _validate(cfg):
         raise ValueError(f"memory.token_budget 不能小于 {MIN_TOKEN_BUDGET}")
     if cfg["llm"]["max_calls_per_turn"] < 1:
         raise ValueError("llm.max_calls_per_turn 不能小于 1")
-    if cfg["compat"]["requests_per_minute"] < 1:
-        raise ValueError("compat.requests_per_minute 不能小于 1")
 
 
 def _environment_overrides():
@@ -145,6 +144,7 @@ def public():
     cfg = copy.deepcopy(get())
     key = cfg["llm"]["api_key"]
     cfg["llm"]["api_key"] = f"{key[:4]}****{key[-4:]}" if len(key) > 8 else ("****" if key else "")
+    cfg["airline"]["auth_header"] = "****" if cfg["airline"].get("auth_header") else ""
     return cfg
 
 
@@ -152,6 +152,7 @@ def redacted():
     """给持久化报告用的完整脱敏快照；不保留密钥首尾片段。"""
     cfg = copy.deepcopy(get())
     cfg["llm"]["api_key"] = "****" if cfg["llm"]["api_key"] else ""
+    cfg["airline"]["auth_header"] = "****" if cfg["airline"].get("auth_header") else ""
     return cfg
 
 

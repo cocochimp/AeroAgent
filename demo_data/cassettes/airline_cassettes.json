@@ -1,0 +1,17 @@
+{
+  "sample-accepted-key": {
+    "status": "ACCEPTED",
+    "supplier_reference": "GDS-SAMPLE-0001",
+    "ticket_no": "781-0000000001",
+    "pnr": "ABC123",
+    "refund_amount": 0,
+    "raw": {"source": "sample cassette"}
+  },
+  "sample-rejected-key": {
+    "status": "REJECTED",
+    "code": "SEAT_SOLD_OUT",
+    "message": "目标航班已无可用座位",
+    "retryable": false,
+    "raw": {"source": "sample cassette"}
+  }
+}

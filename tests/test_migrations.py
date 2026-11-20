@@ -61,7 +61,7 @@ def test_order_booking_and_watch_migration_upgrades_existing_orders(tmp_path):
 
 
 def test_initialize_schema_upgrades_legacy_order_columns(tmp_path, monkeypatch):
-    from app.adapters.outbound.postgres import database
+    from app.adapters.outbound.persistence import database
 
     async def run():
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'legacy-runtime.db'}")
@@ -105,7 +105,7 @@ def test_initialize_schema_upgrades_legacy_order_columns(tmp_path, monkeypatch):
 
 
 def test_new_order_schema_uses_runtime_timestamp_defaults(tmp_path):
-    from app.adapters.outbound.postgres.models import Base
+    from app.adapters.outbound.persistence.models import Base
 
     engine = create_engine(f"sqlite:///{tmp_path / 'new-defaults.db'}")
     Base.metadata.create_all(engine)

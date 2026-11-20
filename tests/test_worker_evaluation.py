@@ -54,33 +54,3 @@ def test_worker_runs_the_case_snapshot_bound_to_run_record(monkeypatch, tmp_path
     assert row.progress["case_set_version"] == "v9"
     assert row.progress["completed"] == 1
     assert row.report["case_set_version"] == "v9"
-
-
-def test_frozen_backend_entry_configures_user_data_and_dispatches_evaluation(monkeypatch, tmp_path):
-    from desktop import backend_entry
-
-    calls = []
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "argv", ["aeroagent-api", "evaluation", "run", "--mode", "offline"])
-    monkeypatch.setenv("AEROAGENT_USER_DATA", str(tmp_path))
-    monkeypatch.delenv("AIR_VAR_DIR", raising=False)
-    monkeypatch.delenv("AIR_CONFIG_PATH", raising=False)
-    monkeypatch.setattr(evaluation, "main", calls.append)
-
-    backend_entry.main()
-
-    assert calls == [["run", "--mode", "offline"]]
-    assert os.environ["AIR_VAR_DIR"] == str(tmp_path / "var")
-    assert os.environ["AIR_CONFIG_PATH"] == str(tmp_path / "config.json")
-
-
-def test_desktop_bundle_contains_evaluation_assets():
-    root = Path(__file__).resolve().parents[1]
-    builder = (root / "desktop" / "electron-builder.yml").read_text(encoding="utf-8")
-    backend_build = (root / "desktop" / "scripts" / "build-backend.cjs").read_text(encoding="utf-8")
-    main = (root / "desktop" / "main.cjs").read_text(encoding="utf-8")
-
-    assert "from: ../eval" in builder
-    assert "to: eval" in builder
-    assert "addData('eval', 'eval')" in backend_build
-    assert "env.AEROAGENT_USER_DATA = userData" in main

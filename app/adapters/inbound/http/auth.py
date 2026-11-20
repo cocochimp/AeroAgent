@@ -7,8 +7,8 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import ProfileRecord
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import ProfileRecord
 
 
 bearer = HTTPBearer(auto_error=False)

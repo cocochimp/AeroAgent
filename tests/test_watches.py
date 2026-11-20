@@ -6,10 +6,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.adapters.inbound.http.auth import Principal
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.models import (
     Base, FlightRecord, PriceAlertRecord, PriceObservationRecord, PriceWatchRecord,
 )
-from app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.persistence.seed import seed_demo_data
 
 
 USER = Principal("u_zhang", frozenset({"user"}))
@@ -241,7 +241,7 @@ def test_one_failing_watch_does_not_stop_the_others(tmp_path, monkeypatch):
         monkeypatch.setattr(service, "evaluate_watch", fake)
         result = await service.evaluate_all_watches()
 
-        assert calls == [failing, healthy], "单条失败后必须继续评估其余监控"
+        assert sorted(calls) == sorted([failing, healthy]), "单条失败后必须继续评估其余监控"
         assert result == {"evaluated": 1, "alerts": 1, "failed": 1}
 
     _run_with_db(tmp_path, monkeypatch, check)

@@ -7,9 +7,9 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import OutboxRecord, EvaluationRunRecord
-from app.adapters.outbound.redis.streams import Streams
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import OutboxRecord, EvaluationRunRecord
+from app.adapters.outbound.messaging.streams import Streams
 from app.application.cases.service import run_case_turn, utcnow
 from app.application.agents.transaction_agent import ConfirmedQuoteCommand, TicketTransactionAgent
 from app.adapters.outbound.telemetry.tracing import configure_tracing

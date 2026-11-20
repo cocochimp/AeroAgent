@@ -4,7 +4,7 @@ Revision ID: 0002_airline_receipts
 """
 from alembic import op
 
-from app.adapters.outbound.postgres.models import AirlineReceiptRecord
+from app.adapters.outbound.persistence.models import AirlineReceiptRecord
 
 revision = "0002_airline_receipts"
 down_revision = "0001_initial"

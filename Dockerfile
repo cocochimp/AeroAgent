@@ -8,7 +8,7 @@ COPY migrations ./migrations
 COPY eval ./eval
 COPY demo_data ./demo_data
 COPY config.example.json ./config.example.json
-RUN mkdir -p var models
+RUN mkdir -p var
 RUN uv sync --frozen --no-dev
 EXPOSE 8000
 CMD ["uv", "run", "--no-sync", "uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -128,6 +128,7 @@ def generate_change_options(quotes: Sequence[Mapping], profile: Mapping | None =
     price_sensitive = ((profile or {}).get("data") or {}).get("price_sensitivity") == "高"
 
     def sort_key(quote):
+        """按价格敏感度或票种偏好排序，末位用确定性候选标识兜底。"""
         target = quote["target"]
         preference = _product_weight(products, target["fare_product"])
         common = (target["date"], target["dep_time"], quote["candidate_id"])

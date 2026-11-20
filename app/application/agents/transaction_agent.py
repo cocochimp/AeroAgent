@@ -18,8 +18,8 @@ class TicketTransactionAgent:
     """执行持久化后的已确认操作；通过履约服务完成幂等和价格复核。"""
     def __init__(self, airline: AirlineGateway | None = None):
         if airline is None:
-            from app.adapters.outbound.airline.mock import MockAirlineGateway
-            airline = MockAirlineGateway()
+            from app.adapters.outbound.airline.factory import create_airline_gateway
+            airline = create_airline_gateway()
         self._airline = airline
 
     async def execute(self, command: ConfirmedQuoteCommand) -> dict:

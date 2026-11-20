@@ -6,7 +6,7 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from app.adapters.outbound.postgres.models import Base
+from app.adapters.outbound.persistence.models import Base
 
 config = context.config
 config.set_main_option("sqlalchemy.url", os.getenv(

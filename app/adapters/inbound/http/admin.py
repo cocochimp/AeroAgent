@@ -17,8 +17,8 @@ from app.adapters.outbound import retrieval as agent_retrieval
 from app import config as legacy_settings
 
 from app.adapters.inbound.http.auth import Principal, require_admin
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import (
     AuditRecord,
     EvaluationCaseSetRecord,
     EvaluationRunRecord,
@@ -60,6 +60,11 @@ class EvalRunRequest(StrictModel):
     """约束评测运行模式和用例选择；空选择表示运行当前用例集全量。"""
     mode: str = Field(default="offline", pattern=r"^(offline|deepseek)$")
     case_ids: list[str] | None = None
+
+
+class MockScenarioUpdate(StrictModel):
+    """切换仿真航司场景；场景定义来自 demo_data/airline_scenarios.json。"""
+    scenario: str = Field(min_length=1, max_length=64)
 
 
 class ConfigUpdate(StrictModel):
@@ -261,3 +266,57 @@ async def put_config(request: ConfigUpdate, principal: Principal = Depends(requi
         await session.commit()
     public = legacy_settings.public()
     return {"config": public, "llm_probe": "passed" if request.probe_llm else None}
+
+
+def _scenario_path() -> Path:
+    return Path(__file__).resolve().parents[4] / "demo_data" / "airline_scenarios.json"
+
+
+def _load_scenarios() -> list[dict]:
+    path = _scenario_path()
+    if not path.exists():
+        return [{"id": "normal", "title": "正常办理"}]
+    return json.loads(path.read_text("utf-8"))
+
+
+@router.get("/mock/scenarios")
+async def list_mock_scenarios(principal: Principal = Depends(require_admin)):
+    """列出可用仿真场景及当前选择。"""
+    current = legacy_settings.get()["airline"].get("scenario", "normal")
+    return {"scenario": current,
+            "scenarios": [{"id": item.get("id"), "title": item.get("title", item.get("id")),
+                           "description": item.get("description", "")} for item in _load_scenarios()]}
+
+
+@router.put("/mock")
+async def set_mock_scenario(request: MockScenarioUpdate, principal: Principal = Depends(require_admin)):
+    """切换场景并同步航班状态；只改演示数据，不动真实订单与账本。"""
+    scenarios = {item.get("id"): item for item in _load_scenarios()}
+    scenario = scenarios.get(request.scenario)
+    if scenario is None:
+        raise _admin_error("VALIDATION", "仿真场景不存在")
+    legacy_settings.update({"airline": {"scenario": request.scenario}})
+    from app.adapters.outbound.persistence.models import FlightRecord
+    from app.adapters.outbound.sqlite import data as legacy_data
+    changed = []
+    async with SessionFactory() as session:
+        # 每次切换先回到正常状态，再应用当前场景覆盖，避免场景之间残留。
+        all_rows = list(await session.scalars(select(FlightRecord)))
+        for row in all_rows:
+            row.status, row.delay_min = "scheduled", 0
+            legacy_data.set_flight_status(row.flight_no, row.date, status="scheduled", delay_min=0)
+        for flight_no, override in (scenario.get("flight_overrides") or {}).items():
+            rows = [row for row in all_rows if row.flight_no == flight_no]
+            for row in rows:
+                row.status = override.get("status", row.status)
+                row.delay_min = override.get("delay_min", 0) if row.status == "delayed" else 0
+                legacy_data.set_flight_status(row.flight_no, row.date, status=row.status,
+                                              delay_min=row.delay_min)
+                changed.append({"flight_no": row.flight_no, "date": row.date,
+                                "status": row.status, "delay_min": row.delay_min})
+        now = utcnow()
+        session.add(AuditRecord(audit_id=f"audit_{uuid.uuid4().hex}", actor_id=principal.user_id,
+                                action="mock.scenario", resource_id=request.scenario,
+                                payload={"changed": changed}, created_at=now))
+        await session.commit()
+    return {"scenario": request.scenario, "title": scenario.get("title"), "changed": changed}

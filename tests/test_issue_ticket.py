@@ -6,10 +6,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.adapters.outbound.airline.mock import MockAirlineGateway
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence.models import (
     Base, LedgerRecord, OperationRecord, OrderRecord, QuoteRecord, ServiceCaseRecord,
 )
-from app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.persistence.seed import seed_demo_data
 from app.adapters.outbound.sqlite import data as agent_data
 from app.application import fulfillment
 from app.application.agents.transaction_agent import ConfirmedQuoteCommand, TicketTransactionAgent

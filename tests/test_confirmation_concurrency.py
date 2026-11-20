@@ -6,11 +6,11 @@ from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.adapters.outbound.postgres import database
-from app.adapters.outbound.postgres.models import (
+from app.adapters.outbound.persistence import database
+from app.adapters.outbound.persistence.models import (
     Base, OperationRecord, OrderRecord, OutboxRecord, QuoteRecord, ServiceCaseRecord,
 )
-from app.adapters.outbound.postgres.seed import seed_demo_data
+from app.adapters.outbound.persistence.seed import seed_demo_data
 from app.application.cases import service as case_service
 from app.application.pricing import calculate
 
@@ -255,4 +255,27 @@ def test_initialize_schema_upgrades_existing_database_with_unique_quote_index(tm
             await _insert_duplicate_operations(engine)
         await engine.dispose()
 
+    asyncio.run(run())
+
+
+def test_cancel_wins_then_confirmation_is_rejected(tmp_path, monkeypatch):
+    """取消先用条件更新赢得竞态后，确认必须被拒绝，不能把已取消报价再出票。"""
+    async def run():
+        from app.adapters.inbound.http import cases as cases_api
+
+        engine, factory = _factory(tmp_path)
+        await _create_schema(engine)
+        _patch_service(monkeypatch, factory)
+        quote_id, user_id = await _create_offered_quote(factory, "cancel-win")
+        monkeypatch.setattr(cases_api, "SessionFactory", factory)
+        await cases_api._cancel_waiting_case("case-cancel-win", quote_id)
+        with pytest.raises(ValueError):
+            await case_service.create_confirmed_operation(
+                quote_id, user_id, "confirm-after-cancel", "ticket-after-cancel")
+        async with factory() as session:
+            quote = await session.get(QuoteRecord, quote_id)
+            case = await session.get(ServiceCaseRecord, "case-cancel-win")
+            assert quote.status == "CANCELLED"
+            assert case.status == "CANCELLED"
+        await engine.dispose()
     asyncio.run(run())

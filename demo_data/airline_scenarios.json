@@ -1,0 +1,51 @@
+[
+  {
+    "id": "normal",
+    "title": "正常办理",
+    "description": "航司接受改签/退票，延迟 300ms。",
+    "latency_ms": 300,
+    "supplier_prefix": "SUP",
+    "ticket_prefix": "781",
+    "faults": {"reject_rate": 0, "timeout_rate": 0, "http_503_rate": 0}
+  },
+  {
+    "id": "typhoon_delay",
+    "title": "台风延误，非自愿改签",
+    "description": "MU5101 取消，改签免改期费和差价。",
+    "latency_ms": 600,
+    "supplier_prefix": "SUP",
+    "ticket_prefix": "MU",
+    "flight_overrides": {"MU5101": {"status": "cancelled", "delay_min": 180}},
+    "outcomes": [{"match": {"action": "CHANGE"}, "status": "ACCEPTED"}],
+    "faults": {"reject_rate": 0, "timeout_rate": 0, "http_503_rate": 0}
+  },
+  {
+    "id": "airline_timeout",
+    "title": "航司超时，结果待核对",
+    "description": "所有办理返回超时，演示 RESULT_UNKNOWN 与主动对账。",
+    "latency_ms": 200,
+    "supplier_prefix": "SUP",
+    "ticket_prefix": "781",
+    "faults": {"reject_rate": 0, "timeout_rate": 1, "http_503_rate": 0}
+  },
+  {
+    "id": "airline_reject",
+    "title": "航司拒绝办理",
+    "description": "返回可解释的拒绝码，案件转人工，不自动重试。",
+    "latency_ms": 300,
+    "supplier_prefix": "SUP",
+    "ticket_prefix": "781",
+    "reject_code": "FARE_RULE_EXPIRED",
+    "reject_message": "该票价规则已失效，请按新票规重新报价",
+    "faults": {"reject_rate": 1, "timeout_rate": 0, "http_503_rate": 0}
+  },
+  {
+    "id": "price_drop",
+    "title": "价格下降，触发价格保护",
+    "description": "演示确认后重核价与 1% 价格保护差额入账。",
+    "latency_ms": 300,
+    "supplier_prefix": "SUP",
+    "ticket_prefix": "781",
+    "faults": {"reject_rate": 0, "timeout_rate": 0, "http_503_rate": 0}
+  }
+]

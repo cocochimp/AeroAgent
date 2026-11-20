@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
 from app.adapters.inbound.http.auth import Principal, get_principal
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.postgres.models import FlightRecord
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.persistence.models import FlightRecord
 from app.application.seed import PRODUCTS, TAX
 
 router = APIRouter(prefix="/api/v1", tags=["flights"])

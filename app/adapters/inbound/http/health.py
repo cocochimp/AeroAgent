@@ -2,8 +2,8 @@
 from fastapi import APIRouter, Response
 from sqlalchemy import text
 
-from app.adapters.outbound.postgres.database import SessionFactory
-from app.adapters.outbound.redis.streams import Streams
+from app.adapters.outbound.persistence.database import SessionFactory
+from app.adapters.outbound.messaging.streams import Streams
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
 
