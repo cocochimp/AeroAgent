@@ -1,45 +1,38 @@
 # AeroAgent
 
-面向机票退改签场景的垂直 Agent：**DeepSeek Harness 负责前台交互，AeroAgent 后端负责业务大脑**。用户在 DSH 原生会话里查订单、看多方案、人工确认、办理退改，全程不离开宿主。
+AeroAgent 是一个面向机票退改签场景的企业级垂直 Agent。它以 **DeepSeek Harness 为原生交互前台**，以 **FastAPI + LangGraph + DDD 分层为业务内核**，把“理解诉求 → 检索票规 → 计算费用 → 生成方案 → 人工确认 → 航司办理 → 结果对账”收束成一条可解释、可审计、可替换的业务闭环。
 
-所有航班、订单、票价与航司回执均为虚构数据；项目不连接真实航司、GDS 或支付渠道。
+它不是一个套在订单系统外面的聊天机器人：三 Agent 在编排层各司其职，领域层只表达费用、票规、校验与状态规则，交易层只接受用户确认后的指令，航司接口以适配器隔离。前台可以换、宿主可以换，业务内核始终自主可控。
 
-## 为什么是 AeroAgent
+- **三 Agent 分层**：理解、方案、交易三类 Agent 权限逐层收窄，模型能力被约束在业务边界内。
+- **DDD 业务内核**：费用、票规、校验、案件状态与交易边界不依赖 Web 框架或 LLM，换前端、换模型不换业务。
+- **DSH 原生体验**：工具卡、报价确认、执行观测都在 DSH 原生 Slot 内完成，不是 iframe 或第二个外壳。
 
-| 亮点 | 业务价值 | 实现 |
-|---|---|---|
-| DSH 前台 + 业务大脑分层 | 交互可换、业务可控，不被宿主绑定 | 插件只做工具/网关/卡片；`app/` 保留三 Agent 与全部规则 |
-| Agent 不能替用户花钱 | 确认与支付是用户动作，不是模型动作 | 工具表无 confirm/pay；按钮只在报价卡与预订页 |
-| 确认后重核价 + 1% 保护 | 乘客确认价可执行，超幅强制重报 | `price_review` + `create_confirmed_operation` |
-| 幂等 + 审计 + 对账 | 重试不重复出票，结果未知可核对 | 幂等键、唯一约束、`operations/{id}/reconcile` |
-| 多方案改签 | 一次给出 2–5 个独立定价方案 | SmartMock 候选 + 费用引擎 + 画像排序 |
-| 可解释执行 | 每条费用能追到规则、检索与航司回执 | 流程/检索/记忆/校验/回执五类观测 |
-| 仿真航司可切换 | 演示真实，未来换真实接口只改适配器 | `mock / http / cassette` 三实现 |
-| 全旅程闭环 | 查询 → 预订 → 支付 → 退改 → 监控 | Listing、Booking、Watches、Cases 四组 API |
-| 可评测 | 规则与回归可量化 | 内置评测集、运行历史与失败明细 |
+> 所有航班、订单、票价与航司回执均为虚构数据；项目不连接真实航司、GDS 或支付渠道。
 
 ## 架构
 
-```mermaid
-flowchart LR
-  U[乘客] --> DSH[DSH 原生会话]
-  DSH -->|工具调用| P[plugin Host 网关]
-  P -->|Bearer + RPC| API[FastAPI /api/v1]
-  API --> A[MainServiceAgent]
-  A --> B[ServicingAdvisorAgent]
-  B --> R[规则检索 + 费用引擎 + 校验]
-  A --> C[TicketTransactionAgent]
-  C --> G[AirlineGateway]
-  G --> M[Mock 仿真]
-  G --> H[HTTP 真实接口骨架]
-  G --> K[Cassette 回放]
-  API --> DB[(SQLite)]
-  DSH --> UI[报价卡 / 订单 / 观测]
-```
+![AeroAgent 整体架构](docs/assets/architecture.png)
+
+> DSH 前台、插件网关、三 Agent 编排、DDD 内核与可替换航司适配；架构图由 Archify 生成，4:3 浅色版。
 
 ### 界面预览
 
-<img width="4536" height="3224" alt="AeroAgent 1.0 系统架构" src="docs/assets/v1.0-workbench.png" />
+![AeroAgent 在 DSH Web 中的退改工作台](docs/assets/v1.0-workbench.png)
+
+## 为什么是 AeroAgent
+
+| 亮点 | 为什么重要 | 实现 |
+|---|---|---|
+| **三 Agent 权限逐层收窄** | 主服务 Agent 只理解与追问，方案 Agent 只读证据、生成方案，交易 Agent 只执行已确认操作；模型不会因为“会聊天”就获得写权限 | `main_agent.py` / `solution_agent.py` / `transaction_agent.py` + LangGraph 状态机 |
+| **DDD 业务内核与框架解耦** | 费用、票规、校验、案件状态、交易边界独立于 FastAPI/LLM；换 Web 框架或模型，业务规则无需迁移 | `domain/` + `application/` + `adapters/` 分层 |
+| **确认后重核价 + 1% 价格保护** | 乘客看到的确认价必须可执行；确认后再次核价，波动在 1% 内按确认价办理，超出则生成新报价并要求再次确认，避免“确认价”与“成交价”不一致 | `price_review.py` + `create_confirmed_operation` |
+| **不可逆交易的用户确认门禁** | 报价阶段只读，确认与支付只接受用户在报价卡上的显式动作；后端再把确认号、幂等键、价格复核与审计串成一条可追溯链路。这是“建议”与“授权”的边界，不是简单的按钮限制 | `cases/service.py` + `operations` + 审计 |
+| **幂等、审计与未知结果对账** | 同一确认号/幂等键重放不会重复出票；航司超时进入 `RESULT_UNKNOWN`，不会自动重试，而是按幂等键主动对账 | 唯一约束 + `operations/{id}/reconcile` |
+| **多方案改签与可解释推荐** | 一次生成 2–5 个独立定价方案，按画像排序，推荐理由可被独立校验；不是让模型“编几个选项” | SmartMock + 费用引擎 + `check_change_options` |
+| **五维执行观测** | 流程、检索、记忆、校验、回执全部来自真实执行结果；每笔费用能追到票规、检索漏斗、工具调用与航司回执 | `plugin/client.js` + Trace |
+| **航司适配器可替换** | mock 场景用于演示与回归，http 适配器预留真实接口，cassette 回放真实样本；换真实航司只改适配器，不改案件/费用/幂等/审计 | `AirlineGateway` + `factory` |
+| **DSH 原生前台，而非第二套外壳** | 业务工具、报价卡、执行观测都注册在 DSH 原生 Slot；前台可随宿主升级，业务后端保持独立 | `plugin/src/host` + `plugin/client.js` |
 
 `/app` 是系统 of record：订单、票规、价格、案件、交易、幂等、审计都在这里。DSH 模型只负责“听懂并调用工具”，后端决定“能不能办、多少钱、怎么办”。
 
