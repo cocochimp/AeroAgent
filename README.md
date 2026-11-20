@@ -37,6 +37,10 @@ flowchart LR
   DSH --> UI[报价卡 / 订单 / 观测]
 ```
 
+### 界面预览
+
+<img width="4536" height="3224" alt="AeroAgent 在 DSH Web 中的退改工作台" src="https://github.com/user-attachments/assets/5f58f61a-890b-4012-9c46-1fe54d7f2c2c" />
+
 `/app` 是系统 of record：订单、票规、价格、案件、交易、幂等、审计都在这里。DSH 模型只负责“听懂并调用工具”，后端决定“能不能办、多少钱、怎么办”。
 
 ## 快速启动（约 5 分钟）
